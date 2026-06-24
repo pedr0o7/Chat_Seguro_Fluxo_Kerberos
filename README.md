@@ -15,7 +15,7 @@ Este diretório contém uma implementação didática de dois cenários de segur
 ## Estrutura
 
 ```text
-trabaho_2/
+Chat_Seguro_Fluxo_Kerberos/
   run.py
   test_integrity_demo.py
   src/
@@ -46,7 +46,7 @@ trabaho_2/
 No terminal, entre na pasta do trabalho:
 
 ```bash
-cd trabaho_2
+cd Chat_Seguro_Fluxo_Kerberos
 ```
 
 ### Opção A: Menu interativo principal
@@ -101,7 +101,7 @@ Usuários de demonstração:
 
 ## Testes automatizados
 
-Pela raiz de trabalho_2:
+Pela raiz de Chat_Seguro_Fluxo_Kerberos:
 
 ```bash
 python -m unittest discover -s tests -v
