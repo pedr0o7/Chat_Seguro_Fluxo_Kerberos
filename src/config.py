@@ -1,0 +1,20 @@
+"""Global configuration constants for the Kerberos project."""
+
+AS_HOST = "127.0.0.1"
+AS_PORT = 8888
+
+TGS_HOST = "127.0.0.1"
+TGS_PORT = 8889
+
+CHAT_HOST = "127.0.0.1"
+CHAT_PORT = 9999
+
+MAX_CLOCK_SKEW_SECONDS = 300
+TGT_TTL_SECONDS = 3600
+SERVICE_TTL_SECONDS = 600
+
+PBKDF2_ITERATIONS = 120_000
+KEY_SIZE_BYTES = 16
+
+TGS_PRINCIPAL = "tgs@local"
+CHAT_SERVICE_PRINCIPAL = "chat@local"
