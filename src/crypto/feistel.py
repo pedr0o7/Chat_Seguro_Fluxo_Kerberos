@@ -9,7 +9,11 @@ from __future__ import annotations
 import hashlib
 
 BLOCK_SIZE = 8
-DEFAULT_ROUNDS = 16
+DEFAULT_ROUNDS = 1000
+
+
+def _normalize_rounds(rounds: int) -> int:
+    return max(rounds, DEFAULT_ROUNDS)
 
 
 def _xor_bytes(a: bytes, b: bytes) -> bytes:
@@ -53,7 +57,7 @@ def encrypt_block(block8: bytes, key: bytes, rounds: int = DEFAULT_ROUNDS) -> by
 
     left = block8[:4]
     right = block8[4:]
-    round_keys = _expand_round_keys(key, rounds)
+    round_keys = _expand_round_keys(key, _normalize_rounds(rounds))
 
     for round_key in round_keys:
         f_out = _round_function(right, round_key)
@@ -70,7 +74,7 @@ def decrypt_block(block8: bytes, key: bytes, rounds: int = DEFAULT_ROUNDS) -> by
 
     left = block8[:4]
     right = block8[4:]
-    round_keys = _expand_round_keys(key, rounds)
+    round_keys = _expand_round_keys(key, _normalize_rounds(rounds))
 
     for round_key in reversed(round_keys):
         new_right = left

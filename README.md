@@ -27,7 +27,6 @@ Chat_Seguro_Fluxo_Kerberos/
     secure_chat.py
     ticket_granting_server.py
     crypto/
-      dh.py
       feistel.py
       kdf.py
       utils.py
@@ -111,6 +110,26 @@ Cobertura principal:
 
 - Criptografia básica (roundtrip) e derivação de chave PBKDF2: tests/test_crypto.py
 - Fluxo Kerberos ponta a ponta: tests/test_flow.py
+
+## Validação com Wireshark (para correção)
+
+Para o professor validar confidencialidade no tráfego:
+
+1. Inicie a captura no Wireshark na interface de loopback (Npcap Loopback Adapter, no Windows).
+2. Aplique o filtro:
+
+```text
+tcp.port == 9999 || tcp.port == 8888 || tcp.port == 8889
+```
+
+3. Em paralelo, rode o projeto (por exemplo `python run.py`) e execute o fluxo de autenticação/chat.
+4. No Wireshark, confirme que:
+
+- Porta 8888 (AS): troca de mensagens AS_REQ/AS_REP sem conteúdo textual sensível em claro.
+- Porta 8889 (TGS): troca TGS_REQ/TGS_REP sem credenciais/chaves em texto legível.
+- Porta 9999 (Chat): mensagens de aplicação trafegam em formato cifrado/serializado, sem o texto original em claro.
+
+Observação: como o projeto é didático, os campos de protocolo são legíveis, mas o conteúdo protegido (tickets, autenticadores e payload de chat) não deve aparecer em texto plano.
 
 ## Configurações importantes
 
