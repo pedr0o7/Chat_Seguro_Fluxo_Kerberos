@@ -8,6 +8,7 @@ chat between two logged-in users.
 from __future__ import annotations
 
 import json
+import os
 import queue
 import socket
 import threading
@@ -300,7 +301,7 @@ class SecureChatServer:
             peer_session = self._sessions.get(peer)
 
         if peer_session is None:
-            state.send({"type": "ERROR", "error": "peer disconnected"})
+            state.send({"type": "ERROR", "error": "usuario nao esta mais online"})
             return
 
         peer_session.send({
@@ -325,6 +326,7 @@ class SecureChatClient:
         self.username: str | None = None
         self.long_term_key: bytes | None = None
         self.channels: dict[str, dict[str, Any]] = {}
+        self.channel_history: dict[str, list[str]] = {}
         self.active_channel_id: str | None = None
 
     def connect(self) -> None:
@@ -343,26 +345,54 @@ class SecureChatClient:
             except OSError:
                 pass
 
-    def login(self, username: str, password: str) -> list[dict[str, Any]]:
+    @staticmethod
+    def _print_flow_packet(title: str, payload: dict[str, Any]) -> None:
+        print(title)
+        print(json.dumps(payload, indent=2, ensure_ascii=True))
+
+    def login(self, username: str, password: str, verbose: bool = False) -> list[dict[str, Any]]:
         if self.sock is None or self.reader is None:
             raise RuntimeError("client not connected")
 
-        _send_json(self.sock, {"type": "LOGIN", "username": username}, self.writer_lock)
+        login_msg = {"type": "LOGIN", "username": username}
+        if verbose:
+            print("\n[Etapa 1] Usuario informou login e senha no cliente")
+            print(f"- Login informado: {username}")
+            print("- Senha informada: ********")
+            print("\n[Etapa 2] Cliente envia LOGIN ao servidor")
+            self._print_flow_packet("LOGIN:", login_msg)
+
+        _send_json(self.sock, login_msg, self.writer_lock)
         challenge = _recv_json(self.reader)
         if challenge is None or challenge.get("type") != "LOGIN_CHALLENGE":
             raise RuntimeError(str(challenge.get("error", "login failed")) if challenge else "login failed")
+
+        if verbose:
+            print("\n[Etapa 3] Servidor envia LOGIN_CHALLENGE")
+            self._print_flow_packet("LOGIN_CHALLENGE:", challenge)
 
         salt = b64d(str(challenge["salt"]))
         nonce = str(challenge["nonce"])
         self.long_term_key = derive_key(password, salt, PBKDF2_ITERATIONS)
         proof = hmac_sha256_hex(self.long_term_key, f"{nonce}|{username}".encode("utf-8"))
-        _send_json(self.sock, {"type": "LOGIN_PROOF", "username": username, "proof": proof}, self.writer_lock)
+        login_proof_msg = {"type": "LOGIN_PROOF", "username": username, "proof": proof}
+        if verbose:
+            print("\n[Etapa 4] Cliente envia LOGIN_PROOF")
+            proof_preview = dict(login_proof_msg)
+            proof_preview["proof"] = f"{proof[:12]}..." if len(proof) > 12 else proof
+            self._print_flow_packet("LOGIN_PROOF:", proof_preview)
+
+        _send_json(self.sock, login_proof_msg, self.writer_lock)
 
         response = _recv_json(self.reader)
         if response is None:
             raise RuntimeError("server closed connection")
         if response.get("type") != "LOGIN_OK":
             raise RuntimeError(str(response.get("error", "login failed")))
+
+        if verbose:
+            print("\n[Etapa 5] Servidor valida credenciais e retorna LOGIN_OK")
+            self._print_flow_packet("LOGIN_OK:", response)
 
         self.username = username
         self.running.set()
@@ -420,8 +450,29 @@ class SecureChatClient:
         peer = str(data["peer"])
         channel_key = b64d(str(data["channel_key"]))
         self.channels[channel_id] = {"peer": peer, "channel_key": channel_key}
+        self.channel_history.setdefault(channel_id, [])
         self.active_channel_id = channel_id
         print(f"[canal seguro] aberto com {peer} (id {channel_id})")
+
+    def _append_channel_history(self, channel_id: str, speaker: str, text: str) -> None:
+        entries = self.channel_history.setdefault(channel_id, [])
+        entries.append(f"{speaker}: {text}")
+
+    def _print_channel_history(self, channel_id: str, limit: int = 20) -> None:
+        channel = self.channels.get(channel_id)
+        if channel is None:
+            print("Historico indisponivel: canal nao encontrado.")
+            return
+
+        peer = str(channel.get("peer", "desconhecido"))
+        print(f"Conversa com {peer} (canal {channel_id}):")
+        entries = self.channel_history.get(channel_id, [])
+        if not entries:
+            print("- Sem mensagens anteriores.")
+            return
+
+        for item in entries[-limit:]:
+            print(f"- {item}")
 
     def _handle_incoming_message(self, message: dict[str, Any]) -> None:
         channel_id = str(message.get("channel_id", ""))
@@ -447,6 +498,8 @@ class SecureChatClient:
             print(f"[ALERTA] autenticidade do interlocutor nao e valida para {sender}")
             return
 
+        text = str(data.get("text"))
+        self._append_channel_history(channel_id, sender, text)
         print(f"[{sender}] {data.get('text')}")
 
     def request(self, payload: dict[str, Any]) -> dict[str, Any]:
@@ -486,7 +539,14 @@ class SecureChatClient:
             body = body[:-1] + bytes([body[-1] ^ 0x01])
             payload["body"] = b64e(body)
 
-        self.request({"type": "SEND_MESSAGE", "channel_id": channel_id, "payload": payload})
+        try:
+            self.request({"type": "SEND_MESSAGE", "channel_id": channel_id, "payload": payload})
+        except RuntimeError as exc:
+            error_text = str(exc)
+            if error_text in {"usuario nao esta mais online", "canal expirado, abra novo canal", "sender not in channel"}:
+                raise RuntimeError("o usuario nao esta mais no canal ou nao esta mais online") from exc
+            raise
+        self._append_channel_history(channel_id, self.username, text)
 
     def logout(self) -> None:
         try:
@@ -495,14 +555,14 @@ class SecureChatClient:
             self.close()
 
     def interactive_shell(self) -> None:
-        print("=== Chat seguro interativo ===")
+        print("=== Chat seguro interativo (passo a passo) ===")
         username = input("Usuario: ").strip()
         password = input("Senha: ").strip()
         if not username or not password:
             raise ValueError("usuario e senha sao obrigatorios")
 
         self.connect()
-        participants = self.login(username, password)
+        participants = self.login(username, password, verbose=True)
         print("Login efetuado com sucesso.")
         self._print_participants(participants)
 
@@ -513,6 +573,7 @@ class SecureChatClient:
             print("3 - Enviar mensagem")
             print("4 - Sair")
             option = input("Opcao: ").strip()
+            os.system("cls" if os.name == "nt" else "clear")
 
             try:
                 if option == "1":
@@ -522,8 +583,12 @@ class SecureChatClient:
                     channel_id = self.open_channel(peer)
                     print(f"Canal solicitado com {peer}. Aguarde o aviso de canal seguro (id {channel_id}).")
                 elif option == "3":
+                    if not self.active_channel_id:
+                        raise RuntimeError("nenhum canal ativo. Abra um canal seguro primeiro")
+                    self._print_channel_history(self.active_channel_id)
                     text = input("Mensagem: ").strip()
-                    self.send_message(text)
+                    self.send_message(text, channel_id=self.active_channel_id)
+                    print("Mensagem enviada e adicionada ao historico local.")
                 elif option == "4":
                     self.logout()
                     print("Sessao encerrada.")

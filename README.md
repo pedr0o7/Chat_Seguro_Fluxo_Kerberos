@@ -12,6 +12,55 @@ Este diretório contém uma implementação didática de dois cenários de segur
 - Proteger mensagens com confidencialidade, integridade e autenticidade.
 - Simular o fluxo Kerberos clássico: AS_REQ/AS_REP, TGS_REQ/TGS_REP e AP_REQ/AP_REP.
 
+## Arquitetura Kerberos explicada passo a passo
+
+Nesta implementação, o KDC (Key Distribution Center) é composto por dois serviços:
+
+- AS (Authentication Server): autentica o usuário inicialmente.
+- TGS (Ticket Granting Server): emite ticket para acesso ao serviço final.
+
+Além disso, existe um "banco Kerberos" didático (estrutura de dados em memória) com os principals e chaves de longo prazo.
+
+### Participantes e papéis
+
+- Cliente (usuário): inicia autenticação e solicita tickets.
+- AS: valida identidade e emite TGT.
+- TGS: valida TGT e emite Service Ticket.
+- Service Server (chat): valida Service Ticket e libera o acesso.
+
+### Fluxo sequencial (visão do professor)
+
+1. Usuário informa login e senha no cliente.
+2. O cliente envia AS_REQ ao AS com: username, timestamp e nonce.
+3. O AS consulta o "banco Kerberos" para validar o usuário.
+4. Se válido, o AS responde com AS_REP contendo:
+- TGT (Ticket Granting Ticket), cifrado com a chave do TGS.
+- Chave de sessão cliente-TGS, cifrada com a chave de longo prazo do usuário.
+5. O cliente decripta AS_REP com sua chave derivada da senha e guarda TGT + chave cliente-TGS.
+6. Quando precisa acessar um serviço, o cliente envia TGS_REQ ao TGS com:
+- TGT recebido do AS.
+- Authenticator (username, timestamp, nonce) cifrado com a chave cliente-TGS.
+- Nome do serviço desejado.
+7. O TGS valida TGT, validade temporal e Authenticator (incluindo proteção contra replay).
+8. Se tudo estiver correto, retorna TGS_REP contendo:
+- Service Ticket cifrado com a chave do serviço.
+- Chave de sessão cliente-serviço, cifrada com a chave cliente-TGS.
+9. O cliente envia AP_REQ ao Service Server com:
+- Service Ticket.
+- Novo Authenticator cifrado com a chave cliente-serviço.
+10. O servidor valida ticket e Authenticator; se válido, responde AP_REP (autenticação mútua).
+11. Com a sessão estabelecida, as mensagens de chat seguem cifradas e com verificação de integridade/autenticidade.
+
+### O que garante segurança neste fluxo
+
+- Senha não é reenviada ao serviço final.
+- Tickets são temporários (expiração por TTL).
+- Authenticators usam timestamp + nonce para reduzir replay.
+- Cada etapa usa chaves específicas (longo prazo, cliente-TGS, cliente-serviço).
+- O serviço só aceita ticket emitido pelo TGS para aquele serviço.
+
+Resumo: o usuário autentica uma vez no AS e, a partir disso, usa tickets temporários para acessar serviços sem reapresentar a senha.
+
 ## Estrutura
 
 ```text
@@ -58,7 +107,11 @@ O menu oferece:
 
 1. Servidor de chat seguro.
 2. Cliente de chat seguro.
-3. Demonstração Kerberos educacional.
+3. Kerberos: fluxo completo + menu do cliente.
+
+No modo 3, o terminal exibe o passo a passo das etapas Kerberos (AS_REQ/AS_REP, TGS_REQ/TGS_REP, AP_REQ/AP_REP) e, ao finalizar a autenticacao, abre um menu do cliente logado para continuar a interacao.
+No modo 2, o terminal tambem exibe o passo a passo do login seguro (LOGIN, LOGIN_CHALLENGE, LOGIN_PROOF, LOGIN_OK) antes de abrir o menu interativo.
+No modo 1, o terminal exibe um checklist de inicializacao mostrando AS, TGS e Servidor de Aplicacao como ativos no processo antes de iniciar o servidor de chat.
 
 ### Opção B: Demonstração automática de integridade
 
