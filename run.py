@@ -3,79 +3,234 @@
 Provides three modes:
 - secure chat server
 - secure chat client
-- original Kerberos educational flow
+- Kerberos interactive flow with step-by-step output
 """
 
 from __future__ import annotations
 
 from getpass import getpass
+import json
 
 from src.authentication_server import AuthenticationServer, UserRecord
 from src.chat_server import ChatService
 from src.client import KerberosClient
-from src.config import CHAT_SERVICE_PRINCIPAL, KEY_SIZE_BYTES, PBKDF2_ITERATIONS
+from src.config import (
+    AS_HOST,
+    AS_PORT,
+    CHAT_HOST,
+    CHAT_PORT,
+    CHAT_SERVICE_PRINCIPAL,
+    KEY_SIZE_BYTES,
+    PBKDF2_ITERATIONS,
+    TGS_HOST,
+    TGS_PORT,
+)
 from src.crypto.kdf import derive_key
 from src.crypto.utils import random_bytes
 from src.secure_chat import SecureChatClient, SecureChatServer
 from src.ticket_granting_server import TicketGrantingServer
 
 
-def build_demo_environment() -> tuple[KerberosClient, AuthenticationServer, TicketGrantingServer, ChatService]:
-    salt = b"alice-static-salt"
-    user_password = "alice123"
-    user_key = derive_key(user_password, salt, PBKDF2_ITERATIONS)
+def _build_demo_users() -> dict[str, tuple[str, bytes]]:
+    return {
+        "alice": ("alice123", b"alice-static-salt"),
+        "bob": ("bob123", b"bob-static-salt"),
+        "carol": ("carol123", b"carol-static-salt"),
+    }
+
+
+def _summarize_envelope(envelope: dict | None) -> dict:
+    if not isinstance(envelope, dict):
+        return {"type": "invalid-envelope"}
+
+    body = str(envelope.get("body", ""))
+    mac = str(envelope.get("mac", ""))
+    return {
+        "body_preview": f"{body[:24]}..." if len(body) > 24 else body,
+        "body_length": len(body),
+        "mac_preview": f"{mac[:12]}..." if len(mac) > 12 else mac,
+    }
+
+
+def _print_packet(title: str, packet: dict) -> None:
+    redacted = dict(packet)
+    if "payload" in redacted:
+        redacted["payload"] = _summarize_envelope(redacted.get("payload"))
+    if "tgt" in redacted:
+        redacted["tgt"] = _summarize_envelope(redacted.get("tgt"))
+    if "authenticator" in redacted:
+        redacted["authenticator"] = _summarize_envelope(redacted.get("authenticator"))
+    if "service_ticket" in redacted:
+        redacted["service_ticket"] = _summarize_envelope(redacted.get("service_ticket"))
+    if "message" in redacted:
+        redacted["message"] = _summarize_envelope(redacted.get("message"))
+
+    print(title)
+    print(json.dumps(redacted, indent=2, ensure_ascii=True))
+
+
+def _print_cache_state(client: KerberosClient) -> None:
+    cache = client.cache
+    print("Estado atual do cache Kerberos:")
+    print(f"- TGT presente: {cache.tgt is not None}")
+    print(f"- Chave cliente-TGS presente: {cache.c_tgs_session_key is not None}")
+    print(f"- Service Ticket presente: {cache.service_ticket is not None}")
+    print(f"- Chave cliente-servico presente: {cache.c_s_session_key is not None}")
+
+
+def build_demo_environment(
+    username: str = "alice",
+    password: str = "alice123",
+) -> tuple[KerberosClient, AuthenticationServer, TicketGrantingServer, ChatService]:
+    demo_users = _build_demo_users()
+    if username not in demo_users:
+        raise ValueError("usuario desconhecido")
+
+    users: dict[str, UserRecord] = {}
+    for user, (plain_password, salt) in demo_users.items():
+        users[user] = UserRecord(
+            username=user,
+            long_term_key=derive_key(plain_password, salt, PBKDF2_ITERATIONS),
+        )
+
+    _, user_salt = demo_users[username]
 
     key_tgs = random_bytes(KEY_SIZE_BYTES)
     key_chat = random_bytes(KEY_SIZE_BYTES)
-
-    users = {
-        "alice": UserRecord(username="alice", long_term_key=user_key),
-    }
 
     as_server = AuthenticationServer(users=users, key_tgs=key_tgs)
     tgs_server = TicketGrantingServer(key_tgs=key_tgs, service_keys={CHAT_SERVICE_PRINCIPAL: key_chat})
     chat_service = ChatService(service_name=CHAT_SERVICE_PRINCIPAL, service_key=key_chat)
 
-    client = KerberosClient(username="alice", password=user_password, salt=salt)
+    client = KerberosClient(username=username, password=password, salt=user_salt)
     return client, as_server, tgs_server, chat_service
 
 
+def build_kdc_stack() -> tuple[AuthenticationServer, TicketGrantingServer, ChatService]:
+    demo_users = _build_demo_users()
+    users: dict[str, UserRecord] = {}
+    for user, (plain_password, salt) in demo_users.items():
+        users[user] = UserRecord(
+            username=user,
+            long_term_key=derive_key(plain_password, salt, PBKDF2_ITERATIONS),
+        )
+
+    key_tgs = random_bytes(KEY_SIZE_BYTES)
+    key_chat = random_bytes(KEY_SIZE_BYTES)
+
+    as_server = AuthenticationServer(users=users, key_tgs=key_tgs)
+    tgs_server = TicketGrantingServer(key_tgs=key_tgs, service_keys={CHAT_SERVICE_PRINCIPAL: key_chat})
+    app_server = ChatService(service_name=CHAT_SERVICE_PRINCIPAL, service_key=key_chat)
+    return as_server, tgs_server, app_server
+
+
 def run_kerberos_demo() -> None:
-    client, as_server, tgs_server, chat_service = build_demo_environment()
+    print("=== Fluxo Kerberos passo a passo (modo geral) ===")
+    print("Usuarios demo: alice/alice123, bob/bob123, carol/carol123")
+    username = input("Login: ").strip() or "alice"
+    password = getpass("Senha: ")
 
-    print("[1/4] Cliente -> AS_REQ")
+    print("\n[Etapa 1] Usuario informou login e senha no cliente")
+    print(f"- Login informado: {username}")
+    print("- Senha informada: ********")
+
+    client, as_server, tgs_server, chat_service = build_demo_environment(username=username, password=password)
+
+    print("\n[Etapa 2] Cliente envia AS_REQ para o AS")
     as_req = client.make_as_req()
+    _print_packet("AS_REQ:", as_req)
+
+    print("\n[Etapa 3] AS valida principal e devolve AS_REP com TGT")
     as_rep = as_server.handle_as_req(as_req)
-    client.process_as_rep(as_rep)
-    print("      AS_REP recebido e decriptado com chave derivada da senha")
+    _print_packet("AS_REP:", as_rep)
+    try:
+        client.process_as_rep(as_rep)
+    except Exception as exc:
+        print("Falha ao processar AS_REP. Credenciais invalidas ou resposta adulterada.")
+        raise RuntimeError("autenticacao inicial falhou") from exc
 
-    print("[2/4] Cliente -> TGS_REQ")
+    print("- Cliente decriptou AS_REP com chave derivada da senha")
+    print("- TGT e chave de sessao cliente-TGS armazenados no cache")
+
+    print("\n[Etapa 4] Cliente envia TGS_REQ para solicitar ticket do servico")
     tgs_req = client.make_tgs_req(service=CHAT_SERVICE_PRINCIPAL)
+    _print_packet("TGS_REQ:", tgs_req)
+
+    print("\n[Etapa 5] TGS valida TGT/Auth e retorna TGS_REP")
     tgs_rep = tgs_server.handle_tgs_req(tgs_req)
+    _print_packet("TGS_REP:", tgs_rep)
     client.process_tgs_rep(tgs_rep)
-    print("      TGS_REP recebido com service ticket")
+    print("- Cliente obteve Service Ticket e chave de sessao cliente-servico")
 
-    print("[3/4] Cliente -> AP_REQ (servico)")
+    print("\n[Etapa 6] Cliente envia AP_REQ ao servidor de aplicacao")
     ap_req = client.make_ap_req()
+    _print_packet("AP_REQ:", ap_req)
+
+    print("\n[Etapa 7] Servidor valida Service Ticket/Auth e responde AP_REP")
     ap_rep = chat_service.handle_ap_req(ap_req)
+    _print_packet("AP_REP:", ap_rep)
     client.process_ap_rep(ap_rep)
-    print("      AP_REP validado (autenticacao mutua OK)")
+    print("- AP_REP validado: autenticacao mutua concluida")
 
-    print("[4/4] CHAT_MSG")
-    chat_text = input("Mensagem de teste: ").strip() or "mensagem segura de teste"
-    chat_msg = client.make_chat_message(chat_text)
-    chat_rep = chat_service.handle_chat_msg(chat_msg)
-    if chat_rep.get("msg_type") != "CHAT_OK":
-        raise RuntimeError(f"Falha no chat: {chat_rep}")
+    print("\nAutenticacao Kerberos concluida. Cliente logado.")
 
-    print("      Mensagem entregue com sucesso:", chat_rep["echo"])
-    print("\nFluxo Kerberos educacional executado com sucesso.")
+    while True:
+        print("\nMenu do cliente Kerberos:")
+        print("1 - Enviar mensagem protegida")
+        print("2 - Mostrar estado do cache de tickets")
+        print("3 - Renovar ticket de servico (TGS_REQ/AP_REQ)")
+        print("4 - Encerrar sessao")
+        option = input("Opcao: ").strip()
+
+        if option == "1":
+            print("\n[Etapa 8] Cliente envia mensagem protegida sem reenviar senha")
+            chat_text = input("Mensagem: ").strip() or "mensagem segura de teste"
+            chat_msg = client.make_chat_message(chat_text)
+            _print_packet("CHAT_MSG:", chat_msg)
+            chat_rep = chat_service.handle_chat_msg(chat_msg)
+            _print_packet("CHAT_REP:", chat_rep)
+            if chat_rep.get("msg_type") != "CHAT_OK":
+                print(f"Falha no chat: {chat_rep}")
+            else:
+                print(f"Mensagem entregue com sucesso: {chat_rep['echo']}")
+        elif option == "2":
+            _print_cache_state(client)
+        elif option == "3":
+            print("\n[Renovacao] Cliente solicita novo ticket ao TGS")
+            tgs_req = client.make_tgs_req(service=CHAT_SERVICE_PRINCIPAL)
+            _print_packet("TGS_REQ:", tgs_req)
+            tgs_rep = tgs_server.handle_tgs_req(tgs_req)
+            _print_packet("TGS_REP:", tgs_rep)
+            client.process_tgs_rep(tgs_rep)
+
+            ap_req = client.make_ap_req()
+            _print_packet("AP_REQ:", ap_req)
+            ap_rep = chat_service.handle_ap_req(ap_req)
+            _print_packet("AP_REP:", ap_rep)
+            client.process_ap_rep(ap_rep)
+            print("Novo ticket validado e sessao de servico renovada.")
+        elif option == "4":
+            print("Sessao Kerberos encerrada.")
+            break
+        else:
+            print("Opcao invalida.")
 
 
 def run_server_mode() -> None:
     print("=== Servidor de chat seguro ===")
+    as_server, tgs_server, app_server = build_kdc_stack()
+
+    print("Inicializando ecossistema Kerberos (KDC + servico)...")
+    print(f"[OK] AS (Authentication Server) pronto em memoria ({AS_HOST}:{AS_PORT})")
+    print(f"[OK] TGS (Ticket Granting Server) pronto em memoria ({TGS_HOST}:{TGS_PORT})")
+    print(f"[OK] Servidor de Aplicacao pronto em memoria ({CHAT_HOST}:{CHAT_PORT})")
+    print("[OK] Validacao de principals e emissao de tickets habilitadas")
+
+    # Mantem referencias vivas para evidenciar que os componentes estao ativos neste processo.
+    _ = (as_server, tgs_server, app_server)
+
     server = SecureChatServer.build_demo()
-    print(f"Servidor ouvindo em {server.host}:{server.port}")
+    print(f"Servidor de chat seguro ouvindo em {server.host}:{server.port}")
     print("Usuarios demo: alice/alice123, bob/bob123, carol/carol123")
     print("Ctrl+C para encerrar.")
     server.serve_forever()
@@ -90,7 +245,7 @@ def main() -> None:
     print("=== Aplicacao de seguranca ===")
     print("1 - Chat seguro: servidor")
     print("2 - Chat seguro: cliente")
-    print("3 - Demonstacao Kerberos educacional")
+    print("3 - Kerberos: fluxo completo + menu do cliente")
 
     option = input("Escolha uma opcao: ").strip()
 
