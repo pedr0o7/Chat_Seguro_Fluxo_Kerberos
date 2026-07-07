@@ -106,12 +106,14 @@ python run.py
 O menu oferece:
 
 1. Servidor de chat seguro.
-2. Cliente de chat seguro.
+2. Cliente Kerberos (usa os servidores da opcao 1).
 3. Kerberos: fluxo completo + menu do cliente.
 
 No modo 3, o terminal exibe o passo a passo das etapas Kerberos (AS_REQ/AS_REP, TGS_REQ/TGS_REP, AP_REQ/AP_REP) e, ao finalizar a autenticacao, abre um menu do cliente logado para continuar a interacao.
-No modo 2, o terminal tambem exibe o passo a passo do login seguro (LOGIN, LOGIN_CHALLENGE, LOGIN_PROOF, LOGIN_OK) antes de abrir o menu interativo.
-No modo 1, o terminal exibe um checklist de inicializacao mostrando AS, TGS e Servidor de Aplicacao como ativos no processo antes de iniciar o servidor de chat.
+Nesse modo, AS/TGS/Chat Kerberos sobem em portas livres dinamicas mostradas no terminal para evitar conflito com instancias ja em execucao.
+No modo 2, toda autenticacao e validacao passa por AS/TGS/Servico (AS_REQ/AS_REP, TGS_REQ/TGS_REP e AP_REQ/AP_REP) usando os servidores iniciados na opcao 1.
+No modo 1, sao iniciados AS (8888), TGS (8889), Servico Kerberos (9998) e o chat seguro interativo (9999).
+As portas dinamicas sao exclusivas do modo 3.
 
 ### Opção B: Demonstração automática de integridade
 
@@ -175,12 +177,27 @@ Para o professor validar confidencialidade no tráfego:
 tcp.port == 9999 || tcp.port == 8888 || tcp.port == 8889
 ```
 
+Para o modo 3 (Kerberos completo), o AS/TGS/Chat usam portas dinamicas. Entao o filtro precisa usar as portas exibidas no terminal nessa execucao.
+
+Exemplo (se o terminal mostrar AS=62612, TGS=62814, Chat Kerberos=62815):
+
+```text
+tcp.port == 62612 || tcp.port == 62814 || tcp.port == 62815
+```
+
+Se quiser ver tambem o chat seguro interativo no mesmo filtro, inclua a 9999:
+
+```text
+tcp.port == 9999 || tcp.port == 62612 || tcp.port == 62814 || tcp.port == 62815
+```
+
 3. Em paralelo, rode o projeto (por exemplo `python run.py`) e execute o fluxo de autenticação/chat.
 4. No Wireshark, confirme que:
 
 - Porta 8888 (AS): troca de mensagens AS_REQ/AS_REP sem conteúdo textual sensível em claro.
 - Porta 8889 (TGS): troca TGS_REQ/TGS_REP sem credenciais/chaves em texto legível.
-- Porta 9999 (Chat): mensagens de aplicação trafegam em formato cifrado/serializado, sem o texto original em claro.
+- Porta 9999 (Chat seguro interativo): mensagens de aplicacao trafegam em formato cifrado/serializado, sem o texto original em claro.
+- Chat Kerberos no modo 3: AP_REQ/AP_REP e CHAT_MSG trafegam sem expor conteudo sensivel em texto plano na porta dinamica exibida no terminal.
 
 Observação: como o projeto é didático, os campos de protocolo são legíveis, mas o conteúdo protegido (tickets, autenticadores e payload de chat) não deve aparecer em texto plano.
 
@@ -189,6 +206,7 @@ Observação: como o projeto é didático, os campos de protocolo são legíveis
 Parâmetros globais ficam em src/config.py:
 
 - Endereços e portas (AS, TGS, Chat)
+- Porta dedicada do Chat Kerberos (`KERBEROS_CHAT_PORT`)
 - TTL de tickets
 - Tamanho de chave
 - Iterações PBKDF2

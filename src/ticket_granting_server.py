@@ -2,11 +2,32 @@
 
 from __future__ import annotations
 
+import json
+import socket
+import threading
 from collections.abc import Mapping
 
 from src.common import decrypt_envelope, encrypt_envelope, is_timestamp_fresh, make_ticket, ticket_valid
-from src.config import KEY_SIZE_BYTES, SERVICE_TTL_SECONDS
+from src.config import KEY_SIZE_BYTES, SERVICE_TTL_SECONDS, TGS_HOST, TGS_PORT
 from src.crypto.utils import b64d, now_ts, random_bytes
+
+
+def _send_json(sock: socket.socket, payload: dict) -> None:
+    data = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8") + b"\n"
+    sock.sendall(data)
+
+
+def _recv_json(reader) -> dict | None:
+    line = reader.readline()
+    if not line:
+        return None
+    line = line.strip()
+    if not line:
+        return None
+    try:
+        return json.loads(line)
+    except json.JSONDecodeError:
+        return None
 
 
 class TicketGrantingServer:
@@ -90,3 +111,65 @@ class TicketGrantingServer:
 
         encrypted_payload = encrypt_envelope(rep_payload, c_tgs_session_key)
         return {"msg_type": "TGS_REP", "payload": encrypted_payload}
+
+
+class TGSServer(TicketGrantingServer):
+    """TCP server wrapper for the Ticket Granting Server."""
+
+    def __init__(self, key_tgs: bytes, service_keys: Mapping[str, bytes], host: str = TGS_HOST, port: int = TGS_PORT):
+        super().__init__(key_tgs=key_tgs, service_keys=service_keys)
+        self.host = host
+        self.port = port
+        self._server_socket: socket.socket | None = None
+        self._running = threading.Event()
+
+    def start_background(self) -> threading.Thread:
+        thread = threading.Thread(target=self.serve_forever, daemon=True)
+        thread.start()
+        return thread
+
+    def serve_forever(self) -> None:
+        self._running.set()
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as server_socket:
+            server_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            try:
+                server_socket.bind((self.host, self.port))
+            except OSError as exc:
+                raise RuntimeError(f"porta {self.host}:{self.port} indisponivel") from exc
+            server_socket.listen()
+            self._server_socket = server_socket
+            while self._running.is_set():
+                try:
+                    client_sock, _ = server_socket.accept()
+                except OSError:
+                    break
+                thread = threading.Thread(target=self._handle_client, args=(client_sock,), daemon=True)
+                thread.start()
+
+    def shutdown(self) -> None:
+        self._running.clear()
+        if self._server_socket is not None:
+            try:
+                self._server_socket.shutdown(socket.SHUT_RDWR)
+            except OSError:
+                pass
+            try:
+                self._server_socket.close()
+            except OSError:
+                pass
+
+    def _handle_client(self, sock: socket.socket) -> None:
+        try:
+            reader = sock.makefile("r", encoding="utf-8")
+            request = _recv_json(reader)
+            if request is None:
+                return
+            response = self.handle_tgs_req(request)
+            _send_json(sock, response)
+        except OSError:
+            pass
+        finally:
+            try:
+                sock.close()
+            except OSError:
+                pass

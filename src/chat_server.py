@@ -2,8 +2,31 @@
 
 from __future__ import annotations
 
+import json
+import socket
+import threading
+
 from src.common import decrypt_envelope, encrypt_envelope, is_timestamp_fresh, ticket_valid
+from src.config import CHAT_HOST, CHAT_PORT
 from src.crypto.utils import b64d
+
+
+def _send_json(sock: socket.socket, payload: dict) -> None:
+    data = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8") + b"\n"
+    sock.sendall(data)
+
+
+def _recv_json(reader) -> dict | None:
+    line = reader.readline()
+    if not line:
+        return None
+    line = line.strip()
+    if not line:
+        return None
+    try:
+        return json.loads(line)
+    except json.JSONDecodeError:
+        return None
 
 
 class ChatService:
@@ -100,3 +123,78 @@ class ChatService:
 
         self.messages.append({"username": username, "text": plaintext})
         return {"msg_type": "CHAT_OK", "from": username, "echo": plaintext}
+
+
+class ChatServiceServer(ChatService):
+    """TCP server wrapper for the Kerberos-authenticated chat service."""
+
+    def __init__(self, service_name: str, service_key: bytes, host: str = CHAT_HOST, port: int = CHAT_PORT):
+        super().__init__(service_name=service_name, service_key=service_key)
+        self.host = host
+        self.port = port
+        self._server_socket: socket.socket | None = None
+        self._running = threading.Event()
+
+    def start_background(self) -> threading.Thread:
+        thread = threading.Thread(target=self.serve_forever, daemon=True)
+        thread.start()
+        return thread
+
+    def serve_forever(self) -> None:
+        self._running.set()
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as server_socket:
+            server_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            try:
+                server_socket.bind((self.host, self.port))
+            except OSError as exc:
+                raise RuntimeError(f"porta {self.host}:{self.port} indisponivel") from exc
+            server_socket.listen()
+            self._server_socket = server_socket
+            while self._running.is_set():
+                try:
+                    client_sock, _ = server_socket.accept()
+                except OSError:
+                    break
+                thread = threading.Thread(target=self._handle_client, args=(client_sock,), daemon=True)
+                thread.start()
+
+    def shutdown(self) -> None:
+        self._running.clear()
+        if self._server_socket is not None:
+            try:
+                self._server_socket.shutdown(socket.SHUT_RDWR)
+            except OSError:
+                pass
+            try:
+                self._server_socket.close()
+            except OSError:
+                pass
+
+    def _handle_client(self, sock: socket.socket) -> None:
+        try:
+            reader = sock.makefile("r", encoding="utf-8")
+            # AP_REQ / AP_REP handshake
+            request = _recv_json(reader)
+            if request is None:
+                return
+            if request.get("msg_type") != "AP_REQ":
+                _send_json(sock, {"msg_type": "ERROR", "error": "AP_REQ esperado"})
+                return
+            response = self.handle_ap_req(request)
+            _send_json(sock, response)
+            if response.get("msg_type") != "AP_REP":
+                return
+            # Loop de mensagens de chat
+            while True:
+                msg = _recv_json(reader)
+                if msg is None:
+                    break
+                rep = self.handle_chat_msg(msg)
+                _send_json(sock, rep)
+        except OSError:
+            pass
+        finally:
+            try:
+                sock.close()
+            except OSError:
+                pass

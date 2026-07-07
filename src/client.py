@@ -2,12 +2,32 @@
 
 from __future__ import annotations
 
+import json
+import socket
 from dataclasses import dataclass
 
 from src.common import decrypt_envelope, encrypt_envelope
 from src.config import PBKDF2_ITERATIONS
 from src.crypto.kdf import derive_key
 from src.crypto.utils import now_ts, random_nonce_hex
+
+
+def _send_json(sock: socket.socket, payload: dict) -> None:
+    data = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8") + b"\n"
+    sock.sendall(data)
+
+
+def _recv_json(reader) -> dict | None:
+    line = reader.readline()
+    if not line:
+        return None
+    line = line.strip()
+    if not line:
+        return None
+    try:
+        return json.loads(line)
+    except json.JSONDecodeError:
+        return None
 
 
 @dataclass
@@ -111,3 +131,59 @@ class KerberosClient:
             "service_ticket": self.cache.service_ticket,
             "message": encrypted_message,
         }
+
+    # ------------------------------------------------------------------
+    # Métodos de rede: conectam via TCP aos servidores reais
+    # ------------------------------------------------------------------
+
+    def do_as_exchange(self, host: str, port: int) -> tuple[dict, dict]:
+        """Envia AS_REQ via TCP e processa AS_REP. Retorna (req, rep)."""
+        req = self.make_as_req()
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+            sock.connect((host, port))
+            _send_json(sock, req)
+            reader = sock.makefile("r", encoding="utf-8")
+            response = _recv_json(reader)
+        if response is None:
+            raise RuntimeError("sem resposta do AS")
+        self.process_as_rep(response)
+        return req, response
+
+    def do_tgs_exchange(self, host: str, port: int, service: str) -> tuple[dict, dict]:
+        """Envia TGS_REQ via TCP e processa TGS_REP. Retorna (req, rep)."""
+        req = self.make_tgs_req(service)
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+            sock.connect((host, port))
+            _send_json(sock, req)
+            reader = sock.makefile("r", encoding="utf-8")
+            response = _recv_json(reader)
+        if response is None:
+            raise RuntimeError("sem resposta do TGS")
+        self.process_tgs_rep(response)
+        return req, response
+
+    def connect_to_service(self, host: str, port: int) -> tuple[socket.socket, object, dict, dict]:
+        """Abre conexão TCP persistente com o ChatServiceServer e realiza AP_REQ/AP_REP.
+
+        Retorna (sock, reader, ap_req, ap_rep). O chamador é responsável por fechar sock.
+        """
+        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        sock.connect((host, port))
+        reader = sock.makefile("r", encoding="utf-8")
+        ap_req = self.make_ap_req()
+        _send_json(sock, ap_req)
+        response = _recv_json(reader)
+        if response is None:
+            sock.close()
+            raise RuntimeError("sem resposta AP_REP")
+        self.process_ap_rep(response)
+        return sock, reader, ap_req, response
+
+    def send_chat_message_tcp(self, sock: socket.socket, reader, text: str) -> tuple[dict, dict]:
+        """Envia CHAT_MSG pelo socket já aberto e retorna (msg, rep)."""
+        msg = self.make_chat_message(text)
+        _send_json(sock, msg)
+        response = _recv_json(reader)
+        if response is None:
+            raise RuntimeError("sem resposta do servidor de chat")
+        return msg, response
