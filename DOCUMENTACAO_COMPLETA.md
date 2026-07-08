@@ -181,14 +181,14 @@ sequenceDiagram
 ### 6.2 Modo 2 - Cliente de Chat Seguro (run.py opcao 2)
 
 1. Cliente abre socket TCP com servidor de chat.
-2. Executa login por desafio-resposta:
-- LOGIN(username)
-- LOGIN_CHALLENGE(salt, nonce)
-- LOGIN_PROOF(proof = HMAC(chave_usuario, nonce|username))
-- LOGIN_OK(participantes)
-3. Usuario pode listar usuarios, abrir canal seguro e trocar mensagens.
-4. Ao abrir canal, o servidor gera channel_key e envia CHANNEL_READY cifrado para ambos.
-5. Mensagens sao enviadas em envelope criptografado e autenticado.
+2. Executa autenticacao Kerberos completa:
+- AS_REQ/AS_REP com o AS.
+- TGS_REQ/TGS_REP com o TGS.
+- AP_REQ/AP_REP com o chat interativo seguro.
+3. Apos AP_REP valido, o cliente recebe a lista de participantes e entra no menu interativo.
+4. Usuario pode listar usuarios, abrir canal seguro e trocar mensagens.
+5. Ao abrir canal, o servidor gera channel_key e envia CHANNEL_READY cifrado para ambos com a chave de sessao cliente-servico Kerberos.
+6. Mensagens sao enviadas em envelope criptografado e autenticado com a chave do canal.
 
 ### 6.3 Modo 3 - Fluxo Kerberos Completo (run.py opcao 3)
 

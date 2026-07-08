@@ -106,12 +106,12 @@ python run.py
 O menu oferece:
 
 1. Servidor de chat seguro.
-2. Cliente Kerberos (usa os servidores da opcao 1).
+2. Cliente de chat seguro (usa os servidores da opcao 1).
 3. Kerberos: fluxo completo + menu do cliente.
 
 No modo 3, o terminal exibe o passo a passo das etapas Kerberos (AS_REQ/AS_REP, TGS_REQ/TGS_REP, AP_REQ/AP_REP) e, ao finalizar a autenticacao, abre um menu do cliente logado para continuar a interacao.
 Nesse modo, AS/TGS/Chat Kerberos sobem em portas livres dinamicas mostradas no terminal para evitar conflito com instancias ja em execucao.
-No modo 2, toda autenticacao e validacao passa por AS/TGS/Servico (AS_REQ/AS_REP, TGS_REQ/TGS_REP e AP_REQ/AP_REP) usando os servidores iniciados na opcao 1.
+No modo 2, o cliente autentica no ecossistema Kerberos (AS_REQ/AS_REP, TGS_REQ/TGS_REP e AP_REQ/AP_REP) e, em seguida, abre o menu interativo de chat seguro com as opcoes de listar usuarios online, abrir canal seguro, enviar mensagem e sair.
 No modo 1, sao iniciados AS (8888), TGS (8889), Servico Kerberos (9998) e o chat seguro interativo (9999).
 As portas dinamicas sao exclusivas do modo 3.
 

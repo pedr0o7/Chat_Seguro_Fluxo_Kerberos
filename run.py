@@ -32,7 +32,7 @@ from src.config import (
 )
 from src.crypto.kdf import derive_key
 from src.crypto.utils import random_bytes
-from src.secure_chat import SecureChatServer
+from src.secure_chat import SecureChatClient, SecureChatServer
 from src.ticket_granting_server import TGSServer
 
 
@@ -150,7 +150,7 @@ def build_tcp_environment(
 build_demo_environment = build_tcp_environment
 
 
-def build_kdc_stack() -> tuple[ASServer, TGSServer, ChatServiceServer]:
+def build_kdc_stack() -> tuple[ASServer, TGSServer, ChatServiceServer, bytes]:
     key_tgs = random_bytes(KEY_SIZE_BYTES)
     key_chat = random_bytes(KEY_SIZE_BYTES)
 
@@ -162,7 +162,7 @@ def build_kdc_stack() -> tuple[ASServer, TGSServer, ChatServiceServer]:
         host=CHAT_HOST,
         port=KERBEROS_CHAT_PORT,
     )
-    return as_server, tgs_server, app_server
+    return as_server, tgs_server, app_server, key_chat
 
 
 def _build_kerberos_client(username: str, password: str) -> KerberosClient:
@@ -280,7 +280,7 @@ def run_kerberos_demo() -> None:
 
 def run_server_mode() -> None:
     print("=== Servidor de chat seguro ===")
-    as_server, tgs_server, app_server = build_kdc_stack()
+    as_server, tgs_server, app_server, key_chat = build_kdc_stack()
 
     print("Inicializando ecossistema Kerberos (KDC + servico)...")
     as_server.start_background()
@@ -290,7 +290,12 @@ def run_server_mode() -> None:
     _wait_for_listener(TGS_HOST, TGS_PORT)
     _wait_for_listener(CHAT_HOST, KERBEROS_CHAT_PORT)
 
-    server = SecureChatServer.build_demo()
+    server = SecureChatServer.build_demo(
+        service_key=key_chat,
+        service_name=CHAT_SERVICE_PRINCIPAL,
+        host=CHAT_HOST,
+        port=CHAT_PORT,
+    )
     server_thread = threading.Thread(target=server.serve_forever, daemon=True)
     server_thread.start()
     _wait_for_listener(CHAT_HOST, CHAT_PORT)
@@ -307,71 +312,36 @@ def run_server_mode() -> None:
 
 
 def run_client_mode() -> None:
-    print("=== Cliente Kerberos (usa servidores da opcao 1) ===")
+    print("=== Cliente de chat seguro (usa servidores da opcao 1) ===")
     print("Usuarios demo: alice/alice123, bob/bob123, carol/carol123")
-
     username = input("Login: ").strip() or "alice"
     password = getpass("Senha: ")
 
-    client = _build_kerberos_client(username, password)
-
-    print("\n[Etapa 1] Cliente envia AS_REQ ao AS")
-    as_req, as_rep = client.do_as_exchange(AS_HOST, AS_PORT)
-    _print_packet("AS_REQ:", as_req)
-    _print_packet("AS_REP:", as_rep)
-
-    print("\n[Etapa 2] Cliente envia TGS_REQ ao TGS")
-    tgs_req, tgs_rep = client.do_tgs_exchange(TGS_HOST, TGS_PORT, CHAT_SERVICE_PRINCIPAL)
-    _print_packet("TGS_REQ:", tgs_req)
-    _print_packet("TGS_REP:", tgs_rep)
-
-    print("\n[Etapa 3] Cliente abre conexao no servico e envia AP_REQ")
-    chat_sock, chat_reader, ap_req, ap_rep = client.connect_to_service(CHAT_HOST, KERBEROS_CHAT_PORT)
-    _print_packet("AP_REQ:", ap_req)
-    _print_packet("AP_REP:", ap_rep)
-
-    print("\nAutenticacao concluida: validacao realizada pelos servidores (AS/TGS/Servico).")
+    kerberos_client = _build_kerberos_client(username, password)
+    client = SecureChatClient(host=CHAT_HOST, port=CHAT_PORT)
 
     try:
-        while True:
-            print("\nMenu do cliente (opcao 2):")
-            print("1 - Enviar mensagem protegida")
-            print("2 - Mostrar estado do cache de tickets")
-            print("3 - Renovar ticket de servico")
-            print("4 - Encerrar sessao")
-            option = input("Opcao: ").strip()
-
-            if option == "1":
-                text = input("Mensagem: ").strip() or "mensagem segura de teste"
-                msg, rep = client.send_chat_message_tcp(chat_sock, chat_reader, text)
-                _print_packet("CHAT_MSG:", msg)
-                _print_packet("CHAT_REP:", rep)
-            elif option == "2":
-                _print_cache_state(client)
-            elif option == "3":
-                tgs_req, tgs_rep = client.do_tgs_exchange(TGS_HOST, TGS_PORT, CHAT_SERVICE_PRINCIPAL)
-                _print_packet("TGS_REQ:", tgs_req)
-                _print_packet("TGS_REP:", tgs_rep)
-                chat_sock.close()
-                chat_sock, chat_reader, ap_req, ap_rep = client.connect_to_service(CHAT_HOST, KERBEROS_CHAT_PORT)
-                _print_packet("AP_REQ:", ap_req)
-                _print_packet("AP_REP:", ap_rep)
-            elif option == "4":
-                print("Sessao encerrada.")
-                break
-            else:
-                print("Opcao invalida.")
+        client.connect()
+        participants = client.login_with_kerberos(
+            kerberos_client=kerberos_client,
+            as_host=AS_HOST,
+            as_port=AS_PORT,
+            tgs_host=TGS_HOST,
+            tgs_port=TGS_PORT,
+            service=CHAT_SERVICE_PRINCIPAL,
+            verbose=True,
+        )
+        print("Autenticacao Kerberos concluida com sucesso.")
+        client._print_participants(participants)
+        client.interactive_menu()
     finally:
-        try:
-            chat_sock.close()
-        except OSError:
-            pass
+        client.close()
 
 
 def main() -> None:
     print("=== Aplicacao de seguranca ===")
     print("1 - Chat seguro: servidor")
-    print("2 - Kerberos: cliente (usa servidores da opcao 1)")
+    print("2 - Chat seguro: cliente (usa servidores da opcao 1)")
     print("3 - Kerberos: fluxo completo + menu do cliente")
 
     option = input("Escolha uma opcao: ").strip()

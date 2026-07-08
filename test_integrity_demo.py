@@ -14,8 +14,27 @@ from __future__ import annotations
 import threading
 import time
 import sys
+import socket
 
+from run import build_tcp_environment
+from src.client import KerberosClient
+from src.config import AS_HOST, CHAT_SERVICE_PRINCIPAL, TGS_HOST
 from src.secure_chat import SecureChatClient, SecureChatServer
+
+
+def _salt_for(username: str) -> bytes:
+    salts = {
+        "alice": b"alice-static-salt",
+        "bob": b"bob-static-salt",
+        "carol": b"carol-static-salt",
+    }
+    return salts[username]
+
+
+def _find_free_port() -> int:
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
+        probe.bind(("127.0.0.1", 0))
+        return int(probe.getsockname()[1])
 
 
 def test_integrity_demo() -> None:
@@ -23,24 +42,60 @@ def test_integrity_demo() -> None:
     print("DEMONSTRAÇÃO: INTEGRIDADE E AUTENTICIDADE DE MENSAGENS")
     print("=" * 70)
 
-    server = SecureChatServer.build_demo()
+    as_port = _find_free_port()
+    tgs_port = _find_free_port()
+    kerberos_chat_port = _find_free_port()
+    interactive_chat_port = _find_free_port()
+
+    _, as_server, tgs_server, app_server = build_tcp_environment(
+        username="alice",
+        password="alice123",
+        as_port=as_port,
+        tgs_port=tgs_port,
+        chat_port=kerberos_chat_port,
+    )
+    as_server.start_background()
+    tgs_server.start_background()
+    app_server.start_background()
+
+    server = SecureChatServer.build_demo(
+        service_key=app_server.service_key,
+        service_name=CHAT_SERVICE_PRINCIPAL,
+        port=interactive_chat_port,
+    )
     server_thread = threading.Thread(target=server.serve_forever, daemon=True)
     server_thread.start()
-    time.sleep(0.5)
-    print("\n✓ Servidor iniciado em 127.0.0.1:9999")
+    time.sleep(0.8)
+    print("\n✓ Ecossistema Kerberos + chat interativo iniciados")
 
-    alice = SecureChatClient()
-    bob = SecureChatClient()
+    alice = SecureChatClient(port=interactive_chat_port)
+    bob = SecureChatClient(port=interactive_chat_port)
 
     alice.connect()
     bob.connect()
     print("✓ Clientes conectados ao servidor")
 
-    print("\n--- Login ---")
-    alice_participants = alice.login("alice", "alice123")
-    print("✓ alice autenticada com sucesso")
-    bob_participants = bob.login("bob", "bob123")
-    print("✓ bob autenticado com sucesso")
+    print("\n--- Login Kerberos (AS -> TGS -> AP) ---")
+    alice_k = KerberosClient("alice", "alice123", _salt_for("alice"))
+    bob_k = KerberosClient("bob", "bob123", _salt_for("bob"))
+    alice_participants = alice.login_with_kerberos(
+        kerberos_client=alice_k,
+        as_host=AS_HOST,
+        as_port=as_port,
+        tgs_host=TGS_HOST,
+        tgs_port=tgs_port,
+        service=CHAT_SERVICE_PRINCIPAL,
+    )
+    print("✓ alice autenticada com Kerberos")
+    bob_participants = bob.login_with_kerberos(
+        kerberos_client=bob_k,
+        as_host=AS_HOST,
+        as_port=as_port,
+        tgs_host=TGS_HOST,
+        tgs_port=tgs_port,
+        service=CHAT_SERVICE_PRINCIPAL,
+    )
+    print("✓ bob autenticado com Kerberos")
 
     print(f"\nParticipantes online: {[p['username'] for p in alice_participants if p['online']]}")
 
@@ -84,7 +139,7 @@ def test_integrity_demo() -> None:
     print("\nAs três propriedades de segurança foram demonstradas:")
     print("  - Confidencialidade: envelope criptografado com chave de sessão")
     print("  - Integridade: HMAC-SHA256 detecta alterações")
-    print("  - Autenticidade: desafio-resposta e identificação de remetente")
+    print("  - Autenticidade: Kerberos (AS/TGS/AP) e identificação de remetente")
     print()
 
 

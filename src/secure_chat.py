@@ -1,9 +1,4 @@
-"""Secure interactive chat built on top of the project crypto helpers.
-
-The server authenticates users through a challenge-response login, shows the
-list of participants, and distributes per-channel keys to establish a secure
-chat between two logged-in users.
-"""
+"""Secure interactive chat using Kerberos authentication and protected channels."""
 
 from __future__ import annotations
 
@@ -15,10 +10,11 @@ import threading
 from dataclasses import dataclass, field
 from typing import Any
 
-from src.common import decrypt_envelope, encrypt_envelope
-from src.config import CHAT_HOST, CHAT_PORT, PBKDF2_ITERATIONS
+from src.common import decrypt_envelope, encrypt_envelope, is_timestamp_fresh, ticket_valid
+from src.config import CHAT_HOST, CHAT_PORT, CHAT_SERVICE_PRINCIPAL, PBKDF2_ITERATIONS
+from src.client import KerberosClient
 from src.crypto.kdf import derive_key
-from src.crypto.utils import b64d, b64e, hmac_sha256_hex, now_ts, random_bytes, random_nonce_hex, secure_compare
+from src.crypto.utils import b64d, b64e, now_ts, random_bytes, random_nonce_hex
 
 
 def _send_json(sock: socket.socket, payload: dict[str, Any], lock: threading.Lock | None = None) -> None:
@@ -65,15 +61,24 @@ class ConnectionState:
     sock: socket.socket
     send_lock: threading.Lock = field(default_factory=threading.Lock)
     username: str | None = None
-    long_term_key: bytes | None = None
+    c_s_session_key: bytes | None = None
 
     def send(self, payload: dict[str, Any]) -> None:
         _send_json(self.sock, payload, self.send_lock)
 
 
 class SecureChatServer:
-    def __init__(self, users: dict[str, UserRecord], host: str = CHAT_HOST, port: int = CHAT_PORT):
+    def __init__(
+        self,
+        users: dict[str, UserRecord],
+        service_name: str,
+        service_key: bytes,
+        host: str = CHAT_HOST,
+        port: int = CHAT_PORT,
+    ):
         self.users = users
+        self.service_name = service_name
+        self.service_key = service_key
         self.host = host
         self.port = port
         self._server_socket: socket.socket | None = None
@@ -81,15 +86,28 @@ class SecureChatServer:
         self._lock = threading.Lock()
         self._sessions: dict[str, ConnectionState] = {}
         self._channels: dict[str, ChannelRecord] = {}
+        self._used_auth_nonces: set[str] = set()
 
     @classmethod
-    def build_demo(cls, host: str = CHAT_HOST, port: int = CHAT_PORT) -> "SecureChatServer":
+    def build_demo(
+        cls,
+        service_key: bytes,
+        service_name: str = CHAT_SERVICE_PRINCIPAL,
+        host: str = CHAT_HOST,
+        port: int = CHAT_PORT,
+    ) -> "SecureChatServer":
         demo_users = {
             "alice": _make_user("alice", "alice123"),
             "bob": _make_user("bob", "bob123"),
             "carol": _make_user("carol", "carol123"),
         }
-        return cls(demo_users, host=host, port=port)
+        return cls(
+            demo_users,
+            service_name=service_name,
+            service_key=service_key,
+            host=host,
+            port=port,
+        )
 
     def start_background(self) -> threading.Thread:
         thread = threading.Thread(target=self.serve_forever, daemon=True)
@@ -132,46 +150,27 @@ class SecureChatServer:
         try:
             reader = sock.makefile("r", encoding="utf-8")
 
-            login_request = _recv_json(reader)
-            if login_request is None:
+            ap_req = _recv_json(reader)
+            if ap_req is None:
                 return
 
-            if login_request.get("type") != "LOGIN":
-                state.send({"type": "ERROR", "error": "login required"})
+            if ap_req.get("msg_type") != "AP_REQ":
+                state.send({"type": "ERROR", "error": "AP_REQ required"})
                 return
 
-            username = login_request.get("username")
-            if not isinstance(username, str) or username not in self.users:
-                state.send({"type": "ERROR", "error": "unknown user"})
+            auth = self._authenticate_ap_req(ap_req)
+            if auth is None:
+                state.send({"type": "ERROR", "error": "invalid kerberos authentication"})
                 return
 
-            user = self.users[username]
-            nonce = random_nonce_hex()
-            state.send({"type": "LOGIN_CHALLENGE", "salt": b64e(user.salt), "nonce": nonce})
-
-            proof_request = _recv_json(reader)
-            if proof_request is None:
-                return
-
-            if proof_request.get("type") != "LOGIN_PROOF":
-                state.send({"type": "ERROR", "error": "invalid login proof"})
-                return
-
-            expected_proof = hmac_sha256_hex(user.long_term_key, f"{nonce}|{username}".encode("utf-8"))
-            if not secure_compare(str(proof_request.get("proof", "")), expected_proof):
-                state.send({"type": "ERROR", "error": "invalid credentials"})
-                return
-
-            state.username = username
-            state.long_term_key = user.long_term_key
+            state.username = str(auth["username"])
+            state.c_s_session_key = bytes(auth["c_s_session_key"])
             with self._lock:
-                self._sessions[username] = state
+                self._sessions[state.username] = state
 
-            state.send({
-                "type": "LOGIN_OK",
-                "username": username,
-                "participants": self._participants_snapshot(),
-            })
+            ap_rep = dict(auth["ap_rep"])
+            ap_rep["participants"] = self._participants_snapshot()
+            state.send(ap_rep)
 
             while True:
                 message = _recv_json(reader)
@@ -188,6 +187,69 @@ class SecureChatServer:
                 sock.close()
             except OSError:
                 pass
+
+    def _authenticate_ap_req(self, request: dict[str, Any]) -> dict[str, Any] | None:
+        ticket_envelope = request.get("service_ticket")
+        authenticator = request.get("authenticator")
+
+        if not isinstance(ticket_envelope, dict) or not isinstance(authenticator, dict):
+            return None
+
+        try:
+            ticket = decrypt_envelope(ticket_envelope, self.service_key)
+        except Exception:
+            return None
+
+        if not ticket_valid(ticket):
+            return None
+
+        if ticket.get("service") != self.service_name:
+            return None
+
+        c_s_session_key = b64d(str(ticket["session_key"]))
+
+        try:
+            auth_data = decrypt_envelope(authenticator, c_s_session_key)
+        except Exception:
+            return None
+
+        username = auth_data.get("username")
+        timestamp = auth_data.get("timestamp")
+        nonce = auth_data.get("nonce")
+
+        if not isinstance(username, str) or not isinstance(timestamp, int) or not isinstance(nonce, str):
+            return None
+
+        if username != ticket.get("username"):
+            return None
+
+        if not is_timestamp_fresh(timestamp):
+            return None
+
+        with self._lock:
+            if nonce in self._used_auth_nonces:
+                return None
+            self._used_auth_nonces.add(nonce)
+
+        if username not in self.users:
+            return None
+
+        payload = {
+            "username": username,
+            "service": self.service_name,
+            "timestamp_plus_one": timestamp + 1,
+        }
+        ap_rep = {
+            "msg_type": "AP_REP",
+            "payload": encrypt_envelope(payload, c_s_session_key),
+            "username": username,
+        }
+
+        return {
+            "username": username,
+            "c_s_session_key": c_s_session_key,
+            "ap_rep": ap_rep,
+        }
 
     def _invalidate_user_channels(self, username: str) -> None:
         to_remove = [
@@ -264,7 +326,7 @@ class SecureChatServer:
         channel_id: str,
         channel_key: bytes,
     ) -> None:
-        if session.long_term_key is None:
+        if session.c_s_session_key is None:
             return
 
         payload = {
@@ -273,7 +335,7 @@ class SecureChatServer:
             "channel_key": b64e(channel_key),
             "issued_at": now_ts(),
         }
-        encrypted = encrypt_envelope(payload, session.long_term_key)
+        encrypted = encrypt_envelope(payload, session.c_s_session_key)
         session.send({"type": "CHANNEL_READY", "for": username, "payload": encrypted})
 
     def _relay_message(self, state: ConnectionState, message: dict[str, Any]) -> None:
@@ -324,7 +386,7 @@ class SecureChatClient:
         self.receiver_thread: threading.Thread | None = None
         self.running = threading.Event()
         self.username: str | None = None
-        self.long_term_key: bytes | None = None
+        self.c_s_session_key: bytes | None = None
         self.channels: dict[str, dict[str, Any]] = {}
         self.channel_history: dict[str, list[str]] = {}
         self.active_channel_id: str | None = None
@@ -350,51 +412,53 @@ class SecureChatClient:
         print(title)
         print(json.dumps(payload, indent=2, ensure_ascii=True))
 
-    def login(self, username: str, password: str, verbose: bool = False) -> list[dict[str, Any]]:
+    def login_with_kerberos(
+        self,
+        kerberos_client: KerberosClient,
+        as_host: str,
+        as_port: int,
+        tgs_host: str,
+        tgs_port: int,
+        service: str,
+        verbose: bool = False,
+    ) -> list[dict[str, Any]]:
         if self.sock is None or self.reader is None:
             raise RuntimeError("client not connected")
 
-        login_msg = {"type": "LOGIN", "username": username}
         if verbose:
-            print("\n[Etapa 1] Usuario informou login e senha no cliente")
-            print(f"- Login informado: {username}")
-            print("- Senha informada: ********")
-            print("\n[Etapa 2] Cliente envia LOGIN ao servidor")
-            self._print_flow_packet("LOGIN:", login_msg)
-
-        _send_json(self.sock, login_msg, self.writer_lock)
-        challenge = _recv_json(self.reader)
-        if challenge is None or challenge.get("type") != "LOGIN_CHALLENGE":
-            raise RuntimeError(str(challenge.get("error", "login failed")) if challenge else "login failed")
+            print("\n[Etapa 1] Cliente envia AS_REQ")
+        as_req, as_rep = kerberos_client.do_as_exchange(as_host, as_port)
+        if verbose:
+            self._print_flow_packet("AS_REQ:", as_req)
+            self._print_flow_packet("AS_REP:", as_rep)
 
         if verbose:
-            print("\n[Etapa 3] Servidor envia LOGIN_CHALLENGE")
-            self._print_flow_packet("LOGIN_CHALLENGE:", challenge)
-
-        salt = b64d(str(challenge["salt"]))
-        nonce = str(challenge["nonce"])
-        self.long_term_key = derive_key(password, salt, PBKDF2_ITERATIONS)
-        proof = hmac_sha256_hex(self.long_term_key, f"{nonce}|{username}".encode("utf-8"))
-        login_proof_msg = {"type": "LOGIN_PROOF", "username": username, "proof": proof}
+            print("\n[Etapa 2] Cliente envia TGS_REQ")
+        tgs_req, tgs_rep = kerberos_client.do_tgs_exchange(tgs_host, tgs_port, service)
         if verbose:
-            print("\n[Etapa 4] Cliente envia LOGIN_PROOF")
-            proof_preview = dict(login_proof_msg)
-            proof_preview["proof"] = f"{proof[:12]}..." if len(proof) > 12 else proof
-            self._print_flow_packet("LOGIN_PROOF:", proof_preview)
+            self._print_flow_packet("TGS_REQ:", tgs_req)
+            self._print_flow_packet("TGS_REP:", tgs_rep)
 
-        _send_json(self.sock, login_proof_msg, self.writer_lock)
-
+        if verbose:
+            print("\n[Etapa 3] Cliente envia AP_REQ no chat interativo")
+        ap_req = kerberos_client.make_ap_req()
+        _send_json(self.sock, ap_req, self.writer_lock)
         response = _recv_json(self.reader)
         if response is None:
             raise RuntimeError("server closed connection")
-        if response.get("type") != "LOGIN_OK":
-            raise RuntimeError(str(response.get("error", "login failed")))
+        if response.get("type") == "ERROR":
+            raise RuntimeError(str(response.get("error", "kerberos auth failed")))
+        if response.get("msg_type") != "AP_REP":
+            raise RuntimeError(str(response.get("error", "invalid AP_REP")))
+        kerberos_client.process_ap_rep(response)
 
         if verbose:
-            print("\n[Etapa 5] Servidor valida credenciais e retorna LOGIN_OK")
-            self._print_flow_packet("LOGIN_OK:", response)
+            self._print_flow_packet("AP_REQ:", ap_req)
+            self._print_flow_packet("AP_REP:", response)
+            print("\n[Etapa 4] Autenticacao Kerberos concluida; menu interativo liberado")
 
-        self.username = username
+        self.username = kerberos_client.username
+        self.c_s_session_key = kerberos_client.cache.c_s_session_key
         self.running.set()
         self._start_receiver_thread()
         return list(response.get("participants", []))
@@ -428,7 +492,7 @@ class SecureChatClient:
                 self._handle_incoming_message(message)
                 continue
 
-            if message_type in {"ERROR", "LOGIN_OK", "LIST_USERS_OK", "OPEN_CHANNEL_OK", "SEND_MESSAGE_OK", "LOGOUT_OK"}:
+            if message_type in {"ERROR", "LIST_USERS_OK", "OPEN_CHANNEL_OK", "SEND_MESSAGE_OK", "LOGOUT_OK"}:
                 self.response_queue.put(message)
                 continue
 
@@ -436,12 +500,12 @@ class SecureChatClient:
 
     def _handle_channel_ready(self, message: dict[str, Any]) -> None:
         payload = message.get("payload")
-        if not isinstance(payload, dict) or self.long_term_key is None:
+        if not isinstance(payload, dict) or self.c_s_session_key is None:
             print("[ALERTA] falha ao receber informacoes do canal seguro")
             return
 
         try:
-            data = decrypt_envelope(payload, self.long_term_key)
+            data = decrypt_envelope(payload, self.c_s_session_key)
         except Exception:
             print("[ALERTA] nao foi possivel validar a autenticidade do canal")
             return
@@ -554,18 +618,7 @@ class SecureChatClient:
         finally:
             self.close()
 
-    def interactive_shell(self) -> None:
-        print("=== Chat seguro interativo (passo a passo) ===")
-        username = input("Usuario: ").strip()
-        password = input("Senha: ").strip()
-        if not username or not password:
-            raise ValueError("usuario e senha sao obrigatorios")
-
-        self.connect()
-        participants = self.login(username, password, verbose=True)
-        print("Login efetuado com sucesso.")
-        self._print_participants(participants)
-
+    def interactive_menu(self) -> None:
         while True:
             print("\nMenu:")
             print("1 - Listar usuarios")
