@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
+import threading
 from typing import Any
 
-from src.config import MAX_CLOCK_SKEW_SECONDS
+from src.config import MAX_CLOCK_SKEW_SECONDS, REPLAY_CACHE_TTL_SECONDS
 from src.crypto.feistel import decrypt_cbc, encrypt_cbc
 from src.crypto.kdf import stretch_key_material
 from src.crypto.utils import (
@@ -69,3 +70,25 @@ def decrypt_envelope(envelope: dict[str, str], base_key: bytes) -> dict[str, Any
 def ticket_valid(ticket: dict[str, Any]) -> bool:
     current = now_ts()
     return ticket["issued_at"] <= current <= ticket["expires_at"]
+
+
+class ReplayCache:
+    """Simple TTL replay cache for nonces/message ids."""
+
+    def __init__(self, ttl_seconds: int = REPLAY_CACHE_TTL_SECONDS):
+        self.ttl_seconds = ttl_seconds
+        self._entries: dict[str, int] = {}
+        self._lock = threading.Lock()
+
+    def seen_or_store(self, key: str) -> bool:
+        """Return True if key is a replay; otherwise store and return False."""
+        current = now_ts()
+        expires_before = current - self.ttl_seconds
+        with self._lock:
+            self._entries = {
+                existing_key: ts for existing_key, ts in self._entries.items() if ts > expires_before
+            }
+            if key in self._entries:
+                return True
+            self._entries[key] = current
+            return False

@@ -10,8 +10,14 @@ import threading
 from dataclasses import dataclass, field
 from typing import Any
 
-from src.common import decrypt_envelope, encrypt_envelope, is_timestamp_fresh, ticket_valid
-from src.config import CHAT_HOST, CHAT_PORT, CHAT_SERVICE_PRINCIPAL, PBKDF2_ITERATIONS
+from src.common import ReplayCache, decrypt_envelope, encrypt_envelope, is_timestamp_fresh, ticket_valid
+from src.config import (
+    CHAT_HOST,
+    CHAT_MESSAGE_MAX_SKEW_SECONDS,
+    CHAT_PORT,
+    CHAT_SERVICE_PRINCIPAL,
+    PBKDF2_ITERATIONS,
+)
 from src.client import KerberosClient
 from src.crypto.kdf import derive_key
 from src.crypto.utils import b64d, b64e, now_ts, random_bytes, random_nonce_hex
@@ -86,7 +92,8 @@ class SecureChatServer:
         self._lock = threading.Lock()
         self._sessions: dict[str, ConnectionState] = {}
         self._channels: dict[str, ChannelRecord] = {}
-        self._used_auth_nonces: set[str] = set()
+        self._auth_replay_cache = ReplayCache()
+        self._channel_replay_cache = ReplayCache()
 
     @classmethod
     def build_demo(
@@ -226,10 +233,8 @@ class SecureChatServer:
         if not is_timestamp_fresh(timestamp):
             return None
 
-        with self._lock:
-            if nonce in self._used_auth_nonces:
-                return None
-            self._used_auth_nonces.add(nonce)
+        if self._auth_replay_cache.seen_or_store(f"{username}:{nonce}"):
+            return None
 
         if username not in self.users:
             return None
@@ -358,6 +363,33 @@ class SecureChatServer:
             state.send({"type": "ERROR", "error": "sender not in channel"})
             return
 
+        try:
+            data = decrypt_envelope(payload, channel.channel_key)
+        except Exception:
+            state.send({"type": "ERROR", "error": "mensagem com integridade invalida"})
+            return
+
+        sender = data.get("sender")
+        timestamp = data.get("timestamp")
+        message_id = data.get("message_id")
+        if (
+            not isinstance(sender, str)
+            or not isinstance(timestamp, int)
+            or not isinstance(message_id, str)
+            or sender != username
+        ):
+            state.send({"type": "ERROR", "error": "payload de mensagem invalido"})
+            return
+
+        if not is_timestamp_fresh(timestamp, CHAT_MESSAGE_MAX_SKEW_SECONDS):
+            state.send({"type": "ERROR", "error": "mensagem fora da janela temporal"})
+            return
+
+        replay_key = f"{channel_id}:{sender}:{message_id}"
+        if self._channel_replay_cache.seen_or_store(replay_key):
+            state.send({"type": "ERROR", "error": "replay de mensagem detectado"})
+            return
+
         peer = channel.user_b if username == channel.user_a else channel.user_a
         with self._lock:
             peer_session = self._sessions.get(peer)
@@ -389,6 +421,7 @@ class SecureChatClient:
         self.c_s_session_key: bytes | None = None
         self.channels: dict[str, dict[str, Any]] = {}
         self.channel_history: dict[str, list[str]] = {}
+        self._received_message_ids: dict[str, set[str]] = {}
         self.active_channel_id: str | None = None
 
     def connect(self) -> None:
@@ -515,6 +548,7 @@ class SecureChatClient:
         channel_key = b64d(str(data["channel_key"]))
         self.channels[channel_id] = {"peer": peer, "channel_key": channel_key}
         self.channel_history.setdefault(channel_id, [])
+        self._received_message_ids.setdefault(channel_id, set())
         self.active_channel_id = channel_id
         print(f"[canal seguro] aberto com {peer} (id {channel_id})")
 
@@ -558,6 +592,22 @@ class SecureChatClient:
             print(f"[ALERTA] integridade comprometida na mensagem de {sender}")
             return
 
+        timestamp = data.get("timestamp")
+        message_id = data.get("message_id")
+        if not isinstance(timestamp, int) or not isinstance(message_id, str):
+            print(f"[ALERTA] formato invalido na mensagem de {sender}")
+            return
+
+        if not is_timestamp_fresh(timestamp, CHAT_MESSAGE_MAX_SKEW_SECONDS):
+            print(f"[ALERTA] mensagem fora da janela temporal de {sender}")
+            return
+
+        seen = self._received_message_ids.setdefault(channel_id, set())
+        if message_id in seen:
+            print(f"[ALERTA] replay detectado em mensagem de {sender}")
+            return
+        seen.add(message_id)
+
         if str(data.get("sender")) != sender:
             print(f"[ALERTA] autenticidade do interlocutor nao e valida para {sender}")
             return
@@ -596,7 +646,15 @@ class SecureChatClient:
         if channel is None:
             raise RuntimeError("channel not ready yet")
 
-        payload = encrypt_envelope({"sender": self.username, "text": text, "timestamp": now_ts()}, channel["channel_key"])
+        payload = encrypt_envelope(
+            {
+                "sender": self.username,
+                "text": text,
+                "timestamp": now_ts(),
+                "message_id": random_nonce_hex(),
+            },
+            channel["channel_key"],
+        )
         if tamper:
             payload = dict(payload)
             body = b64d(payload["body"])
@@ -607,7 +665,11 @@ class SecureChatClient:
             self.request({"type": "SEND_MESSAGE", "channel_id": channel_id, "payload": payload})
         except RuntimeError as exc:
             error_text = str(exc)
-            if error_text in {"usuario nao esta mais online", "canal expirado, abra novo canal", "sender not in channel"}:
+            if error_text in {
+                "usuario nao esta mais online",
+                "canal expirado, abra novo canal",
+                "sender not in channel",
+            }:
                 raise RuntimeError("o usuario nao esta mais no canal ou nao esta mais online") from exc
             raise
         self._append_channel_history(channel_id, self.username, text)

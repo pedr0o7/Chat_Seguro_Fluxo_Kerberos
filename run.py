@@ -250,7 +250,8 @@ def run_kerberos_demo() -> None:
                 if chat_rep.get("msg_type") != "CHAT_OK":
                     print(f"Falha no chat: {chat_rep}")
                 else:
-                    print(f"Mensagem entregue com sucesso: {chat_rep['echo']}")
+                    ack = client.process_chat_rep(chat_rep)
+                    print(f"Mensagem entregue com sucesso (id {ack['message_id']}).")
             elif option == "2":
                 _print_cache_state(client)
             elif option == "3":

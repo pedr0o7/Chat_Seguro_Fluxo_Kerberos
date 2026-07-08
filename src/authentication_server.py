@@ -5,10 +5,18 @@ from __future__ import annotations
 import json
 import socket
 import threading
+import time
 from dataclasses import dataclass
 
-from src.common import encrypt_envelope, is_timestamp_fresh, make_ticket
-from src.config import AS_HOST, AS_PORT, KEY_SIZE_BYTES, TGS_PRINCIPAL, TGT_TTL_SECONDS
+from src.common import decrypt_envelope, encrypt_envelope, is_timestamp_fresh, make_ticket
+from src.config import (
+    AS_HOST,
+    AS_PORT,
+    AUTH_FAILURE_DELAY_SECONDS,
+    KEY_SIZE_BYTES,
+    TGS_PRINCIPAL,
+    TGT_TTL_SECONDS,
+)
 from src.crypto.utils import now_ts, random_bytes
 
 
@@ -41,6 +49,11 @@ class AuthenticationServer:
         self.users = users
         self.key_tgs = key_tgs
 
+    @staticmethod
+    def _auth_fail() -> dict:
+        time.sleep(AUTH_FAILURE_DELAY_SECONDS)
+        return {"msg_type": "ERROR", "error": "authentication failed"}
+
     def handle_as_req(self, request: dict) -> dict:
         if request.get("msg_type") != "AS_REQ":
             return {"msg_type": "ERROR", "error": "invalid message type"}
@@ -48,16 +61,34 @@ class AuthenticationServer:
         username = request.get("username")
         nonce = request.get("nonce")
         client_ts = request.get("timestamp")
+        preauth = request.get("preauth")
 
-        if not isinstance(username, str) or not isinstance(nonce, str) or not isinstance(client_ts, int):
-            return {"msg_type": "ERROR", "error": "invalid request format"}
+        if (
+            not isinstance(username, str)
+            or not isinstance(nonce, str)
+            or not isinstance(client_ts, int)
+            or not isinstance(preauth, dict)
+        ):
+            return self._auth_fail()
 
         if not is_timestamp_fresh(client_ts):
-            return {"msg_type": "ERROR", "error": "stale timestamp"}
+            return self._auth_fail()
 
         user = self.users.get(username)
         if user is None:
-            return {"msg_type": "ERROR", "error": "unknown user"}
+            return self._auth_fail()
+
+        try:
+            preauth_payload = decrypt_envelope(preauth, user.long_term_key)
+        except Exception:
+            return self._auth_fail()
+
+        if preauth_payload.get("username") != username:
+            return self._auth_fail()
+        if preauth_payload.get("nonce") != nonce:
+            return self._auth_fail()
+        if preauth_payload.get("timestamp") != client_ts:
+            return self._auth_fail()
 
         issued = now_ts()
         expires = issued + TGT_TTL_SECONDS

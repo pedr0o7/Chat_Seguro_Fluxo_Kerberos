@@ -112,9 +112,12 @@ def test_integrity_demo() -> None:
 
     print("\n--- Teste 2: Mensagem Corrompida ---")
     print("alice enviando mensagem adulterada...")
-    alice.send_message("Mensagem corrompida", tamper=True)
+    try:
+        alice.send_message("Mensagem corrompida", tamper=True)
+        print("[ALERTA] mensagem adulterada nao foi rejeitada como esperado")
+    except Exception:
+        print("✓ mensagem adulterada foi rejeitada no servidor (integridade protegida)")
     time.sleep(0.5)
-    print("✓ bob recebeu alerta de integridade comprometida (como esperado)")
 
     print("\n--- Teste 3: Verificação de Autenticidade ---")
     print("Tentando enviar mensagem com peer inválido...")

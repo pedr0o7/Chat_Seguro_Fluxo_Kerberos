@@ -16,6 +16,7 @@ O sistema nao usa bibliotecas externas e foi construído apenas com a biblioteca
 - Integridade/autenticidade por HMAC
 - Tickets temporarios com expiracao
 - Mitigacao de replay com timestamp e nonce
+- Pre-autenticacao no AS para prova de posse da chave de longo prazo
 
 ## 2. Objetivo do Sistema
 
@@ -139,7 +140,7 @@ sequenceDiagram
     participant TGS as Ticket Granting Server
     participant S as Chat Service
 
-    C->>AS: AS_REQ(username, timestamp, nonce)
+    C->>AS: AS_REQ(username, timestamp, nonce, preauth)
     AS-->>C: AS_REP(payload cifrado c/ chave do usuario + TGT)
 
     C->>TGS: TGS_REQ(service, TGT, authenticator)
@@ -149,25 +150,25 @@ sequenceDiagram
     S-->>C: AP_REP(timestamp+1)
 
     C->>S: CHAT_MSG(service_ticket, message envelope)
-    S-->>C: CHAT_OK(echo)
+    S-->>C: CHAT_OK(payload cifrado com ACK)
 ```
 
 ### 5.4 Explicacao passo a passo
 
 1. O usuario informa login/senha no cliente.
 2. O cliente deriva a chave de longo prazo localmente via PBKDF2.
-3. Cliente envia AS_REQ com username, timestamp e nonce.
-4. AS valida formato, frescor de timestamp e existencia do usuario.
+3. Cliente envia AS_REQ com username, timestamp, nonce e pre-autenticacao cifrada com chave derivada da senha.
+4. AS valida formato, frescor de timestamp, existencia do usuario e a pre-autenticacao.
 5. AS gera chave de sessao C-TGS, encapsula em payload e cria TGT cifrado com chave do TGS.
 6. Cliente decripta AS_REP com sua chave de longo prazo e armazena TGT + chave C-TGS.
 7. Cliente envia TGS_REQ com TGT + authenticator cifrado com C-TGS.
-8. TGS valida TGT, validade temporal, consistencia do usuario e replay de nonce.
+8. TGS valida TGT, validade temporal, consistencia do usuario e replay de nonce com cache TTL.
 9. TGS gera chave de sessao C-S, emite service ticket cifrado com chave do servico.
 10. Cliente decripta TGS_REP (com C-TGS) e armazena service ticket + C-S.
 11. Cliente envia AP_REQ ao servico com service ticket + authenticator cifrado com C-S.
 12. Servidor valida ticket, validade, servico-alvo, replay e autenticador.
-13. Servidor retorna AP_REP com evidência de autenticacao mutua (timestamp+1).
-14. Cliente valida AP_REP e passa a enviar mensagens de chat protegidas.
+13. Servidor retorna AP_REP com evidencia de autenticacao mutua (timestamp+1).
+14. Cliente valida AP_REP estritamente (timestamp+1, usuario e servico) e passa a enviar mensagens de chat protegidas.
 
 ## 6. Fluxo Completo de Funcionamento (Inicio ao Fim)
 
@@ -189,6 +190,7 @@ sequenceDiagram
 4. Usuario pode listar usuarios, abrir canal seguro e trocar mensagens.
 5. Ao abrir canal, o servidor gera channel_key e envia CHANNEL_READY cifrado para ambos com a chave de sessao cliente-servico Kerberos.
 6. Mensagens sao enviadas em envelope criptografado e autenticado com a chave do canal.
+7. O relay do chat interativo valida sender, timestamp e message_id; mensagens fora de janela temporal ou repetidas sao rejeitadas.
 
 ### 6.3 Modo 3 - Fluxo Kerberos Completo (run.py opcao 3)
 
@@ -196,7 +198,7 @@ sequenceDiagram
 2. Cliente executa TGS_REQ/TGS_REP.
 3. Cliente executa AP_REQ/AP_REP.
 4. Cliente autenticado envia CHAT_MSG para ChatService.
-5. ChatService retorna CHAT_OK.
+5. ChatService retorna CHAT_OK com payload cifrado contendo ACK (sem texto da mensagem em claro).
 6. Menu permite renovacao de ticket e envio continuo sem reenviar senha.
 
 ### 6.4 Fluxo de Dados Sensiveis
@@ -215,11 +217,19 @@ Centraliza parametros globais:
 - Enderecos e portas de AS, TGS e Chat
 - Limite de skew temporal
 - TTL de TGT e service ticket
+- TTL do cache anti-replay
+- Atraso uniforme de falha de autenticacao no AS
 - Numero de iteracoes PBKDF2
 - Tamanho de chave
 - Principals padrao
 
 Impacto: qualquer alteracao aqui afeta comportamento de autenticacao, validade e conectividade.
+
+Novos parametros de hardening:
+
+- AUTH_FAILURE_DELAY_SECONDS
+- REPLAY_CACHE_TTL_SECONDS
+- CHAT_MESSAGE_MAX_SKEW_SECONDS
 
 ### 7.2 src/crypto/kdf.py
 

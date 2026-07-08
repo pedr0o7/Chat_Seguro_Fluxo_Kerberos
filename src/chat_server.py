@@ -6,9 +6,9 @@ import json
 import socket
 import threading
 
-from src.common import decrypt_envelope, encrypt_envelope, is_timestamp_fresh, ticket_valid
-from src.config import CHAT_HOST, CHAT_PORT
-from src.crypto.utils import b64d
+from src.common import ReplayCache, decrypt_envelope, encrypt_envelope, is_timestamp_fresh, ticket_valid
+from src.config import CHAT_HOST, CHAT_MESSAGE_MAX_SKEW_SECONDS, CHAT_PORT
+from src.crypto.utils import b64d, now_ts
 
 
 def _send_json(sock: socket.socket, payload: dict) -> None:
@@ -34,7 +34,8 @@ class ChatService:
         self.service_name = service_name
         self.service_key = service_key
         self.messages: list[dict[str, str]] = []
-        self.used_nonces: set[str] = set()
+        self.auth_replay_cache = ReplayCache()
+        self.chat_replay_cache = ReplayCache()
 
     def handle_ap_req(self, request: dict) -> dict:
         if request.get("msg_type") != "AP_REQ":
@@ -74,9 +75,9 @@ class ChatService:
         if username != ticket.get("username"):
             return {"msg_type": "ERROR", "error": "username mismatch"}
 
-        if nonce in self.used_nonces:
+        replay_key = f"{username}:{nonce}"
+        if self.auth_replay_cache.seen_or_store(replay_key):
             return {"msg_type": "ERROR", "error": "replay detected"}
-        self.used_nonces.add(nonce)
 
         if not is_timestamp_fresh(timestamp):
             return {"msg_type": "ERROR", "error": "stale authenticator"}
@@ -95,6 +96,9 @@ class ChatService:
         }
 
     def handle_chat_msg(self, request: dict) -> dict:
+        if request.get("msg_type") != "CHAT_MSG":
+            return {"msg_type": "ERROR", "error": "invalid message type"}
+
         ticket_envelope = request.get("service_ticket")
         msg_envelope = request.get("message")
 
@@ -109,6 +113,9 @@ class ChatService:
         if not ticket_valid(ticket):
             return {"msg_type": "ERROR", "error": "service ticket expired"}
 
+        if ticket.get("service") != self.service_name:
+            return {"msg_type": "ERROR", "error": "wrong service ticket"}
+
         c_s_session_key = b64d(ticket["session_key"])
 
         try:
@@ -118,11 +125,31 @@ class ChatService:
 
         username = ticket.get("username")
         plaintext = message_data.get("text")
-        if not isinstance(username, str) or not isinstance(plaintext, str):
+        message_ts = message_data.get("timestamp")
+        message_id = message_data.get("message_id")
+        if (
+            not isinstance(username, str)
+            or not isinstance(plaintext, str)
+            or not isinstance(message_ts, int)
+            or not isinstance(message_id, str)
+        ):
             return {"msg_type": "ERROR", "error": "invalid message payload"}
 
+        if not is_timestamp_fresh(message_ts, CHAT_MESSAGE_MAX_SKEW_SECONDS):
+            return {"msg_type": "ERROR", "error": "stale chat message"}
+
+        replay_key = f"{username}:{message_id}"
+        if self.chat_replay_cache.seen_or_store(replay_key):
+            return {"msg_type": "ERROR", "error": "chat replay detected"}
+
         self.messages.append({"username": username, "text": plaintext})
-        return {"msg_type": "CHAT_OK", "from": username, "echo": plaintext}
+        ack_payload = {
+            "status": "ok",
+            "message_id": message_id,
+            "received_at": now_ts(),
+        }
+        encrypted_ack = encrypt_envelope(ack_payload, c_s_session_key)
+        return {"msg_type": "CHAT_OK", "from": username, "payload": encrypted_ack}
 
 
 class ChatServiceServer(ChatService):

@@ -7,8 +7,8 @@ import socket
 import threading
 from collections.abc import Mapping
 
-from src.common import decrypt_envelope, encrypt_envelope, is_timestamp_fresh, make_ticket, ticket_valid
-from src.config import KEY_SIZE_BYTES, SERVICE_TTL_SECONDS, TGS_HOST, TGS_PORT
+from src.common import ReplayCache, decrypt_envelope, encrypt_envelope, is_timestamp_fresh, make_ticket, ticket_valid
+from src.config import KEY_SIZE_BYTES, SERVICE_TTL_SECONDS, TGS_HOST, TGS_PORT, TGS_PRINCIPAL
 from src.crypto.utils import b64d, now_ts, random_bytes
 
 
@@ -34,7 +34,7 @@ class TicketGrantingServer:
     def __init__(self, key_tgs: bytes, service_keys: Mapping[str, bytes]):
         self.key_tgs = key_tgs
         self.service_keys = dict(service_keys)
-        self.used_nonces: set[str] = set()
+        self.replay_cache = ReplayCache()
 
     def handle_tgs_req(self, request: dict) -> dict:
         if request.get("msg_type") != "TGS_REQ":
@@ -58,7 +58,7 @@ class TicketGrantingServer:
         if not ticket_valid(tgt):
             return {"msg_type": "ERROR", "error": "expired tgt"}
 
-        if tgt.get("service") != "tgs@local":
+        if tgt.get("service") != TGS_PRINCIPAL:
             return {"msg_type": "ERROR", "error": "tgt not intended for tgs"}
 
         c_tgs_session_key = b64d(tgt["session_key"])
@@ -81,9 +81,9 @@ class TicketGrantingServer:
         if not is_timestamp_fresh(timestamp):
             return {"msg_type": "ERROR", "error": "stale authenticator"}
 
-        if nonce in self.used_nonces:
+        replay_key = f"{username}:{nonce}"
+        if self.replay_cache.seen_or_store(replay_key):
             return {"msg_type": "ERROR", "error": "replay detected"}
-        self.used_nonces.add(nonce)
 
         issued = now_ts()
         expires = issued + SERVICE_TTL_SECONDS
