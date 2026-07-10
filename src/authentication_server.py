@@ -1,4 +1,4 @@
-"""Authentication Server (AS) for the educational Kerberos flow."""
+#Servidor de Autenticação (AS) para o fluxo Kerberos didático.
 
 from __future__ import annotations
 
@@ -52,11 +52,11 @@ class AuthenticationServer:
     @staticmethod
     def _auth_fail() -> dict:
         time.sleep(AUTH_FAILURE_DELAY_SECONDS)
-        return {"msg_type": "ERROR", "error": "authentication failed"}
+        return {"msg_type": "ERROR", "error": "falha de autenticação"}
 
     def handle_as_req(self, request: dict) -> dict:
         if request.get("msg_type") != "AS_REQ":
-            return {"msg_type": "ERROR", "error": "invalid message type"}
+            return {"msg_type": "ERROR", "error": "tipo de mensagem inválido"}
 
         username = request.get("username")
         nonce = request.get("nonce")
@@ -125,7 +125,7 @@ class AuthenticationServer:
 
 
 class ASServer(AuthenticationServer):
-    """TCP server wrapper for the Authentication Server."""
+    # Encapsulador TCP para o servidor de autenticação.
 
     def __init__(self, users: dict[str, UserRecord], key_tgs: bytes, host: str = AS_HOST, port: int = AS_PORT):
         super().__init__(users=users, key_tgs=key_tgs)

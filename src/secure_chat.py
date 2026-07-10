@@ -1,4 +1,4 @@
-"""Secure interactive chat using Kerberos authentication and protected channels."""
+#Chat interativo seguro com autenticação Kerberos e canais protegidos.#
 
 from __future__ import annotations
 
@@ -162,12 +162,12 @@ class SecureChatServer:
                 return
 
             if ap_req.get("msg_type") != "AP_REQ":
-                state.send({"type": "ERROR", "error": "AP_REQ required"})
+                state.send({"type": "ERROR", "error": "AP_REQ obrigatório"})
                 return
 
             auth = self._authenticate_ap_req(ap_req)
             if auth is None:
-                state.send({"type": "ERROR", "error": "invalid kerberos authentication"})
+                state.send({"type": "ERROR", "error": "autenticação Kerberos inválida"})
                 return
 
             state.username = str(auth["username"])
@@ -293,23 +293,23 @@ class SecureChatServer:
                 self._invalidate_user_channels(state.username)
             raise SystemExit
 
-        state.send({"type": "ERROR", "error": "unknown command"})
+        state.send({"type": "ERROR", "error": "comando desconhecido"})
 
     def _open_channel(self, state: ConnectionState, message: dict[str, Any]) -> None:
         username = state.username
         peer = message.get("peer")
         if username is None or not isinstance(peer, str):
-            state.send({"type": "ERROR", "error": "login required"})
+            state.send({"type": "ERROR", "error": "login obrigatório"})
             return
 
         if peer == username:
-            state.send({"type": "ERROR", "error": "cannot open channel with yourself"})
+            state.send({"type": "ERROR", "error": "não é possível abrir canal consigo mesmo"})
             return
 
         with self._lock:
             peer_session = self._sessions.get(peer)
         if peer_session is None:
-            state.send({"type": "ERROR", "error": "peer is offline"})
+            state.send({"type": "ERROR", "error": "destinatário está offline"})
             return
 
         channel_id = random_nonce_hex(12)
@@ -349,7 +349,7 @@ class SecureChatServer:
         payload = message.get("payload")
 
         if username is None or not isinstance(channel_id, str) or not isinstance(payload, dict):
-            state.send({"type": "ERROR", "error": "invalid message format"})
+            state.send({"type": "ERROR", "error": "formato de mensagem inválido"})
             return
 
         with self._lock:
@@ -360,7 +360,7 @@ class SecureChatServer:
             return
 
         if username not in (channel.user_a, channel.user_b):
-            state.send({"type": "ERROR", "error": "sender not in channel"})
+            state.send({"type": "ERROR", "error": "remetente não pertence ao canal"})
             return
 
         try:
@@ -456,7 +456,7 @@ class SecureChatClient:
         verbose: bool = False,
     ) -> list[dict[str, Any]]:
         if self.sock is None or self.reader is None:
-            raise RuntimeError("client not connected")
+            raise RuntimeError("cliente não conectado")
 
         if verbose:
             print("\n[Etapa 1] Cliente envia AS_REQ")
@@ -478,11 +478,11 @@ class SecureChatClient:
         _send_json(self.sock, ap_req, self.writer_lock)
         response = _recv_json(self.reader)
         if response is None:
-            raise RuntimeError("server closed connection")
+            raise RuntimeError("servidor encerrou a conexão")
         if response.get("type") == "ERROR":
-            raise RuntimeError(str(response.get("error", "kerberos auth failed")))
+            raise RuntimeError(str(response.get("error", "falha na autenticação Kerberos")))
         if response.get("msg_type") != "AP_REP":
-            raise RuntimeError(str(response.get("error", "invalid AP_REP")))
+            raise RuntimeError(str(response.get("error", "AP_REP inválido")))
         kerberos_client.process_ap_rep(response)
 
         if verbose:
@@ -618,12 +618,12 @@ class SecureChatClient:
 
     def request(self, payload: dict[str, Any]) -> dict[str, Any]:
         if self.sock is None:
-            raise RuntimeError("client not connected")
+            raise RuntimeError("cliente não conectado")
 
         _send_json(self.sock, payload, self.writer_lock)
         response = self.response_queue.get()
         if response.get("type") == "ERROR":
-            raise RuntimeError(str(response.get("error", "request failed")))
+            raise RuntimeError(str(response.get("error", "requisição falhou")))
         return response
 
     def list_users(self) -> list[dict[str, Any]]:
@@ -636,15 +636,15 @@ class SecureChatClient:
 
     def send_message(self, text: str, channel_id: str | None = None, tamper: bool = False) -> None:
         if self.username is None:
-            raise RuntimeError("login required")
+            raise RuntimeError("login obrigatório")
 
         channel_id = channel_id or self.active_channel_id
         if not channel_id:
-            raise RuntimeError("no active channel")
+            raise RuntimeError("nenhum canal ativo")
 
         channel = self.channels.get(channel_id)
         if channel is None:
-            raise RuntimeError("channel not ready yet")
+            raise RuntimeError("canal ainda não está pronto")
 
         payload = encrypt_envelope(
             {
@@ -668,7 +668,7 @@ class SecureChatClient:
             if error_text in {
                 "usuario nao esta mais online",
                 "canal expirado, abra novo canal",
-                "sender not in channel",
+                "remetente não pertence ao canal",
             }:
                 raise RuntimeError("o usuario nao esta mais no canal ou nao esta mais online") from exc
             raise

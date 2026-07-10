@@ -1,4 +1,4 @@
-"""Protected chat service that validates Kerberos service tickets."""
+#Serviço de chat protegido que valida tickets de serviço Kerberos.
 
 from __future__ import annotations
 
@@ -39,48 +39,48 @@ class ChatService:
 
     def handle_ap_req(self, request: dict) -> dict:
         if request.get("msg_type") != "AP_REQ":
-            return {"msg_type": "ERROR", "error": "invalid message type"}
+            return {"msg_type": "ERROR", "error": "tipo de mensagem inválido"}
 
         ticket_envelope = request.get("service_ticket")
         authenticator = request.get("authenticator")
 
         if not isinstance(ticket_envelope, dict) or not isinstance(authenticator, dict):
-            return {"msg_type": "ERROR", "error": "invalid request format"}
+            return {"msg_type": "ERROR", "error": "formato de requisição inválido"}
 
         try:
             ticket = decrypt_envelope(ticket_envelope, self.service_key)
         except Exception:
-            return {"msg_type": "ERROR", "error": "invalid service ticket"}
+            return {"msg_type": "ERROR", "error": "ticket de serviço inválido"}
 
         if not ticket_valid(ticket):
-            return {"msg_type": "ERROR", "error": "service ticket expired"}
+            return {"msg_type": "ERROR", "error": "ticket de serviço expirado"}
 
         if ticket.get("service") != self.service_name:
-            return {"msg_type": "ERROR", "error": "wrong service ticket"}
+            return {"msg_type": "ERROR", "error": "ticket de serviço incorreto"}
 
         c_s_session_key = b64d(ticket["session_key"])
 
         try:
             auth_data = decrypt_envelope(authenticator, c_s_session_key)
         except Exception:
-            return {"msg_type": "ERROR", "error": "invalid authenticator"}
+            return {"msg_type": "ERROR", "error": "autenticador inválido"}
 
         username = auth_data.get("username")
         timestamp = auth_data.get("timestamp")
         nonce = auth_data.get("nonce")
 
         if not isinstance(username, str) or not isinstance(timestamp, int) or not isinstance(nonce, str):
-            return {"msg_type": "ERROR", "error": "invalid authenticator format"}
+            return {"msg_type": "ERROR", "error": "formato de autenticador inválido"}
 
         if username != ticket.get("username"):
-            return {"msg_type": "ERROR", "error": "username mismatch"}
+            return {"msg_type": "ERROR", "error": "usuário não confere"}
 
         replay_key = f"{username}:{nonce}"
         if self.auth_replay_cache.seen_or_store(replay_key):
-            return {"msg_type": "ERROR", "error": "replay detected"}
+            return {"msg_type": "ERROR", "error": "replay detectado"}
 
         if not is_timestamp_fresh(timestamp):
-            return {"msg_type": "ERROR", "error": "stale authenticator"}
+            return {"msg_type": "ERROR", "error": "autenticador fora da janela temporal"}
 
         ap_rep_payload = {
             "username": username,
@@ -97,31 +97,31 @@ class ChatService:
 
     def handle_chat_msg(self, request: dict) -> dict:
         if request.get("msg_type") != "CHAT_MSG":
-            return {"msg_type": "ERROR", "error": "invalid message type"}
+            return {"msg_type": "ERROR", "error": "tipo de mensagem inválido"}
 
         ticket_envelope = request.get("service_ticket")
         msg_envelope = request.get("message")
 
         if not isinstance(ticket_envelope, dict) or not isinstance(msg_envelope, dict):
-            return {"msg_type": "ERROR", "error": "invalid chat request"}
+            return {"msg_type": "ERROR", "error": "requisição de chat inválida"}
 
         try:
             ticket = decrypt_envelope(ticket_envelope, self.service_key)
         except Exception:
-            return {"msg_type": "ERROR", "error": "invalid service ticket"}
+            return {"msg_type": "ERROR", "error": "ticket de serviço inválido"}
 
         if not ticket_valid(ticket):
-            return {"msg_type": "ERROR", "error": "service ticket expired"}
+            return {"msg_type": "ERROR", "error": "ticket de serviço expirado"}
 
         if ticket.get("service") != self.service_name:
-            return {"msg_type": "ERROR", "error": "wrong service ticket"}
+            return {"msg_type": "ERROR", "error": "ticket de serviço incorreto"}
 
         c_s_session_key = b64d(ticket["session_key"])
 
         try:
             message_data = decrypt_envelope(msg_envelope, c_s_session_key)
         except Exception:
-            return {"msg_type": "ERROR", "error": "invalid encrypted message"}
+            return {"msg_type": "ERROR", "error": "mensagem criptografada inválida"}
 
         username = ticket.get("username")
         plaintext = message_data.get("text")
@@ -133,18 +133,18 @@ class ChatService:
             or not isinstance(message_ts, int)
             or not isinstance(message_id, str)
         ):
-            return {"msg_type": "ERROR", "error": "invalid message payload"}
+            return {"msg_type": "ERROR", "error": "payload de mensagem inválido"}
 
         if not is_timestamp_fresh(message_ts, CHAT_MESSAGE_MAX_SKEW_SECONDS):
-            return {"msg_type": "ERROR", "error": "stale chat message"}
+            return {"msg_type": "ERROR", "error": "mensagem fora da janela temporal"}
 
         replay_key = f"{username}:{message_id}"
         if self.chat_replay_cache.seen_or_store(replay_key):
-            return {"msg_type": "ERROR", "error": "chat replay detected"}
+            return {"msg_type": "ERROR", "error": "replay de mensagem detectado"}
 
         self.messages.append({"username": username, "text": plaintext})
         ack_payload = {
-            "status": "ok",
+            "status": "sucesso",
             "message_id": message_id,
             "received_at": now_ts(),
         }
@@ -153,7 +153,7 @@ class ChatService:
 
 
 class ChatServiceServer(ChatService):
-    """TCP server wrapper for the Kerberos-authenticated chat service."""
+    # Encapsulador TCP para o serviço de chat autenticado por Kerberos.
 
     def __init__(self, service_name: str, service_key: bytes, host: str = CHAT_HOST, port: int = CHAT_PORT):
         super().__init__(service_name=service_name, service_key=service_key)
@@ -200,7 +200,7 @@ class ChatServiceServer(ChatService):
     def _handle_client(self, sock: socket.socket) -> None:
         try:
             reader = sock.makefile("r", encoding="utf-8")
-            # AP_REQ / AP_REP handshake
+            # Negociação AP_REQ / AP_REP
             request = _recv_json(reader)
             if request is None:
                 return
@@ -211,7 +211,6 @@ class ChatServiceServer(ChatService):
             _send_json(sock, response)
             if response.get("msg_type") != "AP_REP":
                 return
-            # Loop de mensagens de chat
             while True:
                 msg = _recv_json(reader)
                 if msg is None:

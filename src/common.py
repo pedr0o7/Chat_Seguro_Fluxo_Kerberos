@@ -1,4 +1,4 @@
-"""Common protocol structures and secure envelope helpers."""
+#Estruturas comuns de protocolo e utilitários de envelope seguro.#
 
 from __future__ import annotations
 
@@ -59,7 +59,7 @@ def decrypt_envelope(envelope: dict[str, str], base_key: bytes) -> dict[str, Any
 
     expected = hmac_sha256_hex(mac_key, body)
     if not secure_compare(mac, expected):
-        raise ValueError("invalid envelope MAC")
+        raise ValueError("MAC do envelope inválido")
 
     iv = body[:8]
     ciphertext = body[8:]
@@ -73,7 +73,7 @@ def ticket_valid(ticket: dict[str, Any]) -> bool:
 
 
 class ReplayCache:
-    """Simple TTL replay cache for nonces/message ids."""
+    #Cache simples com TTL para detectar replay de nonces/message ids.#
 
     def __init__(self, ttl_seconds: int = REPLAY_CACHE_TTL_SECONDS):
         self.ttl_seconds = ttl_seconds
@@ -81,7 +81,7 @@ class ReplayCache:
         self._lock = threading.Lock()
 
     def seen_or_store(self, key: str) -> bool:
-        """Return True if key is a replay; otherwise store and return False."""
+        #Retorna True se a chave já foi vista (replay); caso contrário, armazena e retorna False.#
         current = now_ts()
         expires_before = current - self.ttl_seconds
         with self._lock:

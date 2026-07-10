@@ -21,7 +21,7 @@ class TestKerberosFlow(unittest.TestCase):
         chat_rep = chat_service.handle_chat_msg(client.make_chat_message("hello"))
         self.assertEqual(chat_rep["msg_type"], "CHAT_OK")
         ack = client.process_chat_rep(chat_rep)
-        self.assertEqual(ack["status"], "ok")
+        self.assertEqual(ack["status"], "sucesso")
 
     def test_as_req_requires_preauth(self) -> None:
         client, as_server, _, _ = build_demo_environment()
@@ -30,7 +30,7 @@ class TestKerberosFlow(unittest.TestCase):
 
         rep = as_server.handle_as_req(as_req)
         self.assertEqual(rep["msg_type"], "ERROR")
-        self.assertEqual(rep["error"], "authentication failed")
+        self.assertEqual(rep["error"], "falha de autenticação")
 
     def test_client_rejects_nonce_mismatch_in_as_rep(self) -> None:
         client, as_server, _, _ = build_demo_environment()
@@ -82,7 +82,7 @@ class TestKerberosFlow(unittest.TestCase):
 
         self.assertEqual(first["msg_type"], "CHAT_OK")
         self.assertEqual(second["msg_type"], "ERROR")
-        self.assertEqual(second["error"], "chat replay detected")
+        self.assertEqual(second["error"], "replay de mensagem detectado")
 
     def test_chat_rejects_wrong_service_ticket(self) -> None:
         client, as_server, tgs_server, chat_service = build_demo_environment()
@@ -98,7 +98,7 @@ class TestKerberosFlow(unittest.TestCase):
 
         rep = chat_service.handle_chat_msg(msg)
         self.assertEqual(rep["msg_type"], "ERROR")
-        self.assertEqual(rep["error"], "wrong service ticket")
+        self.assertEqual(rep["error"], "ticket de serviço incorreto")
 
     def test_chat_rejects_stale_message_timestamp(self) -> None:
         client, as_server, tgs_server, chat_service = build_demo_environment()
@@ -114,7 +114,7 @@ class TestKerberosFlow(unittest.TestCase):
 
         rep = chat_service.handle_chat_msg(msg)
         self.assertEqual(rep["msg_type"], "ERROR")
-        self.assertEqual(rep["error"], "stale chat message")
+        self.assertEqual(rep["error"], "mensagem fora da janela temporal")
 
 
 if __name__ == "__main__":

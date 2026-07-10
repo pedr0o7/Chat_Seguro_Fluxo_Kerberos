@@ -1,10 +1,10 @@
-"""Interactive entrypoint for the security project.
+#Ponto de entrada interativo do projeto de segurança.
 
-Provides three modes:
-- secure chat server
-- secure chat client
-- Kerberos interactive flow with step-by-step output
-"""
+# Oferece três modos:
+# - servidor de chat seguro
+# - cliente de chat seguro
+# - fluxo Kerberos interativo com passo a passo
+
 
 from __future__ import annotations
 
@@ -46,7 +46,7 @@ def _build_demo_users() -> dict[str, tuple[str, bytes]]:
 
 def _summarize_envelope(envelope: dict | None) -> dict:
     if not isinstance(envelope, dict):
-        return {"type": "invalid-envelope"}
+        return {"type": "envelope-invalido"}
 
     body = str(envelope.get("body", ""))
     mac = str(envelope.get("mac", ""))
@@ -119,7 +119,7 @@ def build_tcp_environment(
     tgs_port: int = TGS_PORT,
     chat_port: int = KERBEROS_CHAT_PORT,
 ) -> tuple[KerberosClient, ASServer, TGSServer, ChatServiceServer]:
-    """Cria servidores TCP reais (AS, TGS, Chat) e um cliente Kerberos."""
+    #Cria servidores TCP reais (AS, TGS, Chat) e um cliente Kerberos.
     demo_users = _build_demo_users()
     if username not in demo_users:
         raise ValueError("usuario desconhecido")
@@ -146,7 +146,7 @@ def build_tcp_environment(
     return client, as_server, tgs_server, chat_server
 
 
-# Alias mantido para compatibilidade com testes existentes
+# Alias mantido para compatibilidade com testes.
 build_demo_environment = build_tcp_environment
 
 
@@ -199,7 +199,7 @@ def run_kerberos_demo() -> None:
     as_server.start_background()
     tgs_server.start_background()
     chat_server.start_background()
-    time.sleep(0.3)  # aguarda os sockets ficarem prontos
+    time.sleep(0.3)
     print(f"[OK] AS  ouvindo em {AS_HOST}:{as_port}")
     print(f"[OK] TGS ouvindo em {TGS_HOST}:{tgs_port}")
     print(f"[OK] Chat (Kerberos) ouvindo em {CHAT_HOST}:{chat_port}")

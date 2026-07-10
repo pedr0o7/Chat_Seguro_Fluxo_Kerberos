@@ -1,4 +1,4 @@
-"""Ticket Granting Server (TGS) for the educational Kerberos flow."""
+# Servidor de Concessão de Tickets (TGS) para o fluxo Kerberos didático.
 
 from __future__ import annotations
 
@@ -38,52 +38,52 @@ class TicketGrantingServer:
 
     def handle_tgs_req(self, request: dict) -> dict:
         if request.get("msg_type") != "TGS_REQ":
-            return {"msg_type": "ERROR", "error": "invalid message type"}
+            return {"msg_type": "ERROR", "error": "tipo de mensagem inválido"}
 
         service = request.get("service")
         tgt_envelope = request.get("tgt")
         authenticator = request.get("authenticator")
 
         if not isinstance(service, str) or not isinstance(tgt_envelope, dict) or not isinstance(authenticator, dict):
-            return {"msg_type": "ERROR", "error": "invalid request format"}
+            return {"msg_type": "ERROR", "error": "formato de requisição inválido"}
 
         if service not in self.service_keys:
-            return {"msg_type": "ERROR", "error": "unknown service"}
+            return {"msg_type": "ERROR", "error": "serviço desconhecido"}
 
         try:
             tgt = decrypt_envelope(tgt_envelope, self.key_tgs)
         except Exception:
-            return {"msg_type": "ERROR", "error": "invalid tgt"}
+            return {"msg_type": "ERROR", "error": "TGT inválido"}
 
         if not ticket_valid(tgt):
-            return {"msg_type": "ERROR", "error": "expired tgt"}
+            return {"msg_type": "ERROR", "error": "TGT expirado"}
 
         if tgt.get("service") != TGS_PRINCIPAL:
-            return {"msg_type": "ERROR", "error": "tgt not intended for tgs"}
+            return {"msg_type": "ERROR", "error": "TGT não destinado ao TGS"}
 
         c_tgs_session_key = b64d(tgt["session_key"])
 
         try:
             auth_data = decrypt_envelope(authenticator, c_tgs_session_key)
         except Exception:
-            return {"msg_type": "ERROR", "error": "invalid authenticator"}
+            return {"msg_type": "ERROR", "error": "autenticador inválido"}
 
         username = auth_data.get("username")
         timestamp = auth_data.get("timestamp")
         nonce = auth_data.get("nonce")
 
         if not isinstance(username, str) or not isinstance(timestamp, int) or not isinstance(nonce, str):
-            return {"msg_type": "ERROR", "error": "invalid authenticator format"}
+            return {"msg_type": "ERROR", "error": "formato de autenticador inválido"}
 
         if username != tgt.get("username"):
-            return {"msg_type": "ERROR", "error": "username mismatch"}
+            return {"msg_type": "ERROR", "error": "usuário não confere"}
 
         if not is_timestamp_fresh(timestamp):
-            return {"msg_type": "ERROR", "error": "stale authenticator"}
+            return {"msg_type": "ERROR", "error": "autenticador fora da janela temporal"}
 
         replay_key = f"{username}:{nonce}"
         if self.replay_cache.seen_or_store(replay_key):
-            return {"msg_type": "ERROR", "error": "replay detected"}
+            return {"msg_type": "ERROR", "error": "replay detectado"}
 
         issued = now_ts()
         expires = issued + SERVICE_TTL_SECONDS
@@ -114,7 +114,7 @@ class TicketGrantingServer:
 
 
 class TGSServer(TicketGrantingServer):
-    """TCP server wrapper for the Ticket Granting Server."""
+    # Encapsulador TCP para o servidor de concessão de tickets.
 
     def __init__(self, key_tgs: bytes, service_keys: Mapping[str, bytes], host: str = TGS_HOST, port: int = TGS_PORT):
         super().__init__(key_tgs=key_tgs, service_keys=service_keys)

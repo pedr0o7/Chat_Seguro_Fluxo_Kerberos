@@ -1,13 +1,13 @@
-"""Automated demo script to validate message integrity and authenticity.
+# Script de demonstração automática para validar integridade e autenticidade de mensagens.
 
-This script:
-1. Starts the secure chat server
-2. Connects two clients (alice and bob)
-3. Opens a secure channel
-4. Sends an intact message (success)
-5. Sends a corrupted message (integrity alert)
-6. Validates that the security mechanisms work as expected
-"""
+# Este script:
+# 1. Inicia o servidor de chat seguro
+# 2. Conecta dois clientes (alice e bob)
+# 3. Abre um canal seguro
+# 4. Envia uma mensagem íntegra (sucesso)
+# 5. Envia uma mensagem corrompida (alerta de integridade)
+# 6. Valida se os mecanismos de segurança funcionam como esperado
+
 
 from __future__ import annotations
 

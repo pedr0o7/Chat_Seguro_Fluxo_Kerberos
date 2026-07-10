@@ -1,4 +1,4 @@
-"""Global configuration constants for the Kerberos project."""
+#Constantes globais de configuração do projeto Kerberos.#
 
 AS_HOST = "127.0.0.1"
 AS_PORT = 8888

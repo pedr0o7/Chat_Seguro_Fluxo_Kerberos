@@ -176,7 +176,7 @@ Para o professor validar confidencialidade no tráfego:
 2. Aplique o filtro:
 
 ```text
-tcp.port == 9999 || tcp.port == 8888 || tcp.port == 8889
+tcp.port == 9999 || tcp.port == 8889 || tcp.port == 8888
 ```
 
 Para o modo 3 (Kerberos completo), o AS/TGS/Chat usam portas dinamicas. Entao o filtro precisa usar as portas exibidas no terminal nessa execucao.

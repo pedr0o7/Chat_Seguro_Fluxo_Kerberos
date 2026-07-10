@@ -1,4 +1,4 @@
-"""Small utility helpers for serialization, randomness and integrity."""
+#Utilitários de serialização, aleatoriedade e integridade.#
 
 from __future__ import annotations
 

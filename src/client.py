@@ -1,4 +1,4 @@
-"""Kerberos client and CLI helper."""
+# Cliente Kerberos e utilitários para CLI.
 
 from __future__ import annotations
 
@@ -194,7 +194,7 @@ class KerberosClient:
     # ------------------------------------------------------------------
 
     def do_as_exchange(self, host: str, port: int) -> tuple[dict, dict]:
-        """Envia AS_REQ via TCP e processa AS_REP. Retorna (req, rep)."""
+        # Envia AS_REQ via TCP e processa AS_REP. Retorna (req, rep).
         req = self.make_as_req()
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
             sock.connect((host, port))
@@ -207,7 +207,7 @@ class KerberosClient:
         return req, response
 
     def do_tgs_exchange(self, host: str, port: int, service: str) -> tuple[dict, dict]:
-        """Envia TGS_REQ via TCP e processa TGS_REP. Retorna (req, rep)."""
+        # Envia TGS_REQ via TCP e processa TGS_REP. Retorna (req, rep).
         req = self.make_tgs_req(service)
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
             sock.connect((host, port))
@@ -220,10 +220,8 @@ class KerberosClient:
         return req, response
 
     def connect_to_service(self, host: str, port: int) -> tuple[socket.socket, object, dict, dict]:
-        """Abre conexão TCP persistente com o ChatServiceServer e realiza AP_REQ/AP_REP.
-
-        Retorna (sock, reader, ap_req, ap_rep). O chamador é responsável por fechar sock.
-        """
+        # Abre conexão TCP persistente com o ChatServiceServer e realiza AP_REQ/AP_REP.
+        # Retorna (sock, reader, ap_req, ap_rep). O chamador é responsável por fechar sock.
         sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         sock.connect((host, port))
         reader = sock.makefile("r", encoding="utf-8")
@@ -237,7 +235,7 @@ class KerberosClient:
         return sock, reader, ap_req, response
 
     def send_chat_message_tcp(self, sock: socket.socket, reader, text: str) -> tuple[dict, dict]:
-        """Envia CHAT_MSG pelo socket já aberto e retorna (msg, rep)."""
+        # Envia CHAT_MSG pelo socket já aberto e retorna (msg, rep).
         msg = self.make_chat_message(text)
         _send_json(sock, msg)
         response = _recv_json(reader)
