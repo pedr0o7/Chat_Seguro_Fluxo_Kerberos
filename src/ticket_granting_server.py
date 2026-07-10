@@ -1,68 +1,89 @@
-"""Ticket Granting Server (TGS) for the educational Kerberos flow."""
+# Servidor de Concessão de Tickets (TGS) para o fluxo Kerberos didático.
 
 from __future__ import annotations
 
+import json
+import socket
+import threading
 from collections.abc import Mapping
 
-from src.common import decrypt_envelope, encrypt_envelope, is_timestamp_fresh, make_ticket, ticket_valid
-from src.config import KEY_SIZE_BYTES, SERVICE_TTL_SECONDS
+from src.common import ReplayCache, decrypt_envelope, encrypt_envelope, is_timestamp_fresh, make_ticket, ticket_valid
+from src.config import KEY_SIZE_BYTES, SERVICE_TTL_SECONDS, TGS_HOST, TGS_PORT, TGS_PRINCIPAL
 from src.crypto.utils import b64d, now_ts, random_bytes
+
+
+def _send_json(sock: socket.socket, payload: dict) -> None:
+    data = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8") + b"\n"
+    sock.sendall(data)
+
+
+def _recv_json(reader) -> dict | None:
+    line = reader.readline()
+    if not line:
+        return None
+    line = line.strip()
+    if not line:
+        return None
+    try:
+        return json.loads(line)
+    except json.JSONDecodeError:
+        return None
 
 
 class TicketGrantingServer:
     def __init__(self, key_tgs: bytes, service_keys: Mapping[str, bytes]):
         self.key_tgs = key_tgs
         self.service_keys = dict(service_keys)
-        self.used_nonces: set[str] = set()
+        self.replay_cache = ReplayCache()
 
     def handle_tgs_req(self, request: dict) -> dict:
         if request.get("msg_type") != "TGS_REQ":
-            return {"msg_type": "ERROR", "error": "invalid message type"}
+            return {"msg_type": "ERROR", "error": "tipo de mensagem inválido"}
 
         service = request.get("service")
         tgt_envelope = request.get("tgt")
         authenticator = request.get("authenticator")
 
         if not isinstance(service, str) or not isinstance(tgt_envelope, dict) or not isinstance(authenticator, dict):
-            return {"msg_type": "ERROR", "error": "invalid request format"}
+            return {"msg_type": "ERROR", "error": "formato de requisição inválido"}
 
         if service not in self.service_keys:
-            return {"msg_type": "ERROR", "error": "unknown service"}
+            return {"msg_type": "ERROR", "error": "serviço desconhecido"}
 
         try:
             tgt = decrypt_envelope(tgt_envelope, self.key_tgs)
         except Exception:
-            return {"msg_type": "ERROR", "error": "invalid tgt"}
+            return {"msg_type": "ERROR", "error": "TGT inválido"}
 
         if not ticket_valid(tgt):
-            return {"msg_type": "ERROR", "error": "expired tgt"}
+            return {"msg_type": "ERROR", "error": "TGT expirado"}
 
-        if tgt.get("service") != "tgs@local":
-            return {"msg_type": "ERROR", "error": "tgt not intended for tgs"}
+        if tgt.get("service") != TGS_PRINCIPAL:
+            return {"msg_type": "ERROR", "error": "TGT não destinado ao TGS"}
 
         c_tgs_session_key = b64d(tgt["session_key"])
 
         try:
             auth_data = decrypt_envelope(authenticator, c_tgs_session_key)
         except Exception:
-            return {"msg_type": "ERROR", "error": "invalid authenticator"}
+            return {"msg_type": "ERROR", "error": "autenticador inválido"}
 
         username = auth_data.get("username")
         timestamp = auth_data.get("timestamp")
         nonce = auth_data.get("nonce")
 
         if not isinstance(username, str) or not isinstance(timestamp, int) or not isinstance(nonce, str):
-            return {"msg_type": "ERROR", "error": "invalid authenticator format"}
+            return {"msg_type": "ERROR", "error": "formato de autenticador inválido"}
 
         if username != tgt.get("username"):
-            return {"msg_type": "ERROR", "error": "username mismatch"}
+            return {"msg_type": "ERROR", "error": "usuário não confere"}
 
         if not is_timestamp_fresh(timestamp):
-            return {"msg_type": "ERROR", "error": "stale authenticator"}
+            return {"msg_type": "ERROR", "error": "autenticador fora da janela temporal"}
 
-        if nonce in self.used_nonces:
-            return {"msg_type": "ERROR", "error": "replay detected"}
-        self.used_nonces.add(nonce)
+        replay_key = f"{username}:{nonce}"
+        if self.replay_cache.seen_or_store(replay_key):
+            return {"msg_type": "ERROR", "error": "replay detectado"}
 
         issued = now_ts()
         expires = issued + SERVICE_TTL_SECONDS
@@ -90,3 +111,65 @@ class TicketGrantingServer:
 
         encrypted_payload = encrypt_envelope(rep_payload, c_tgs_session_key)
         return {"msg_type": "TGS_REP", "payload": encrypted_payload}
+
+
+class TGSServer(TicketGrantingServer):
+    # Encapsulador TCP para o servidor de concessão de tickets.
+
+    def __init__(self, key_tgs: bytes, service_keys: Mapping[str, bytes], host: str = TGS_HOST, port: int = TGS_PORT):
+        super().__init__(key_tgs=key_tgs, service_keys=service_keys)
+        self.host = host
+        self.port = port
+        self._server_socket: socket.socket | None = None
+        self._running = threading.Event()
+
+    def start_background(self) -> threading.Thread:
+        thread = threading.Thread(target=self.serve_forever, daemon=True)
+        thread.start()
+        return thread
+
+    def serve_forever(self) -> None:
+        self._running.set()
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as server_socket:
+            server_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            try:
+                server_socket.bind((self.host, self.port))
+            except OSError as exc:
+                raise RuntimeError(f"porta {self.host}:{self.port} indisponivel") from exc
+            server_socket.listen()
+            self._server_socket = server_socket
+            while self._running.is_set():
+                try:
+                    client_sock, _ = server_socket.accept()
+                except OSError:
+                    break
+                thread = threading.Thread(target=self._handle_client, args=(client_sock,), daemon=True)
+                thread.start()
+
+    def shutdown(self) -> None:
+        self._running.clear()
+        if self._server_socket is not None:
+            try:
+                self._server_socket.shutdown(socket.SHUT_RDWR)
+            except OSError:
+                pass
+            try:
+                self._server_socket.close()
+            except OSError:
+                pass
+
+    def _handle_client(self, sock: socket.socket) -> None:
+        try:
+            reader = sock.makefile("r", encoding="utf-8")
+            request = _recv_json(reader)
+            if request is None:
+                return
+            response = self.handle_tgs_req(request)
+            _send_json(sock, response)
+        except OSError:
+            pass
+        finally:
+            try:
+                sock.close()
+            except OSError:
+                pass

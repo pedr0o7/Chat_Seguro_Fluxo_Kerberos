@@ -1,1 +1,1 @@
-"""Cryptographic primitives used by the project."""
+# Primitivas criptográficas usadas pelo projeto.

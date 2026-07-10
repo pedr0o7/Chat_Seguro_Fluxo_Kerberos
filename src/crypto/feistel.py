@@ -1,8 +1,7 @@
-"""Educational Feistel block cipher with CBC mode.
+#Cifra de bloco Feistel didática com modo CBC.
 
-This is not production-grade cryptography. It is included to satisfy the project
-constraint of implementing symmetric encryption primitives manually.
-"""
+#Implementação acadêmica para estudo.
+
 
 from __future__ import annotations
 
@@ -40,20 +39,20 @@ def _pkcs7_pad(data: bytes, block_size: int) -> bytes:
 
 def _pkcs7_unpad(data: bytes, block_size: int) -> bytes:
     if not data or len(data) % block_size != 0:
-        raise ValueError("invalid padded data length")
+        raise ValueError("tamanho de dado com padding inválido")
     pad_len = data[-1]
     if pad_len < 1 or pad_len > block_size:
-        raise ValueError("invalid padding length")
+        raise ValueError("tamanho de padding inválido")
     if data[-pad_len:] != bytes([pad_len]) * pad_len:
-        raise ValueError("invalid padding bytes")
+        raise ValueError("bytes de padding inválidos")
     return data[:-pad_len]
 
 
 def encrypt_block(block8: bytes, key: bytes, rounds: int = DEFAULT_ROUNDS) -> bytes:
     if len(block8) != BLOCK_SIZE:
-        raise ValueError("block must be exactly 8 bytes")
+        raise ValueError("o bloco deve ter exatamente 8 bytes")
     if len(key) < 16:
-        raise ValueError("key must be at least 16 bytes")
+        raise ValueError("a chave deve ter ao menos 16 bytes")
 
     left = block8[:4]
     right = block8[4:]
@@ -68,9 +67,9 @@ def encrypt_block(block8: bytes, key: bytes, rounds: int = DEFAULT_ROUNDS) -> by
 
 def decrypt_block(block8: bytes, key: bytes, rounds: int = DEFAULT_ROUNDS) -> bytes:
     if len(block8) != BLOCK_SIZE:
-        raise ValueError("block must be exactly 8 bytes")
+        raise ValueError("o bloco deve ter exatamente 8 bytes")
     if len(key) < 16:
-        raise ValueError("key must be at least 16 bytes")
+        raise ValueError("a chave deve ter ao menos 16 bytes")
 
     left = block8[:4]
     right = block8[4:]
@@ -87,7 +86,7 @@ def decrypt_block(block8: bytes, key: bytes, rounds: int = DEFAULT_ROUNDS) -> by
 
 def encrypt_cbc(plaintext: bytes, key: bytes, iv: bytes, rounds: int = DEFAULT_ROUNDS) -> bytes:
     if len(iv) != BLOCK_SIZE:
-        raise ValueError("iv must be 8 bytes")
+        raise ValueError("o IV deve ter 8 bytes")
 
     padded = _pkcs7_pad(plaintext, BLOCK_SIZE)
     prev = iv
@@ -105,9 +104,9 @@ def encrypt_cbc(plaintext: bytes, key: bytes, iv: bytes, rounds: int = DEFAULT_R
 
 def decrypt_cbc(ciphertext: bytes, key: bytes, iv: bytes, rounds: int = DEFAULT_ROUNDS) -> bytes:
     if len(iv) != BLOCK_SIZE:
-        raise ValueError("iv must be 8 bytes")
+        raise ValueError("o IV deve ter 8 bytes")
     if len(ciphertext) % BLOCK_SIZE != 0:
-        raise ValueError("ciphertext length must be multiple of 8")
+        raise ValueError("o tamanho do texto cifrado deve ser múltiplo de 8")
 
     prev = iv
     out = bytearray()
